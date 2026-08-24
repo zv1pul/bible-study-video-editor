@@ -87,6 +87,10 @@ the same afternoon. So the app never depends on one model:
   is retried rather than quietly letting the rest drop to the offline matcher.
   These models think before answering and thinking spends the same output
   budget, so a cut-off list can still be valid JSON.
+* **Self-healing when models retire** — if every model in the chain is gone,
+  the app asks the provider what it currently offers and tries those. Verified
+  by deleting the whole chain: it discovered the live list and recovered on
+  its own, with no code change.
 * **Always an answer** — if every model is down, the offline keyword matcher
   takes over and says so. The app never fails with nothing to show.
 
@@ -519,6 +523,34 @@ render_video(
 | Out of memory on a web host | The free tier is too small for that video. Run it locally, or trim the recording first. |
 
 ---
+
+## Running it as a shared service
+
+The app behaves differently when it detects a server rather than a laptop.
+Detection is automatic on Hugging Face Spaces, Streamlit Community Cloud and
+Cloud Run; set `BSVE_HOSTED=1` to force it.
+
+What changes:
+
+* **The "use a file already on this computer" option disappears.** On a shared
+  server that path box would read the *server's* disk, so it is not offered.
+* **Hosted transcription becomes the default**, so one person's lesson does
+  not monopolise a container everybody shares.
+* **Advice about large files changes** to point at a local install instead.
+
+Two housekeeping behaviours matter for anything long-running:
+
+* **Working folders are swept on start-up.** Every session keeps a copy of its
+  video plus the render — well over a gigabyte for a full lesson — and
+  Streamlit has no reliable "session ended" hook. Anything older than six
+  hours is deleted, and re-rendering replaces the previous file rather than
+  stacking up beside it.
+* **Only one speech model is held in memory at a time**, and transcription is
+  serialised. Two people transcribing at once share one model object, and
+  switching model size would otherwise leave both resident.
+
+Renders are not serialised. Two people rendering simultaneously on a small
+container will simply both be slow.
 
 ## Keeping the API key safe
 

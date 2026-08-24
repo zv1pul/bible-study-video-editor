@@ -271,7 +271,11 @@ def verify_matches(
                 )
 
         # --- Layer 6: how long it stays up -------------------------------------
-        span = max(float(match.end_time) - original, 0.0)
+        # Measured against the SNAPPED start and the end that will actually be
+        # used, not the model's original numbers — otherwise a card that was
+        # moved earlier gets reported as lasting no time at all.
+        final_end = max(float(match.end_time), time_value + MIN_READABLE_SECONDS)
+        span = max(final_end - time_value, 0.0)
         if span <= 0:
             reasons.append("No end time was given.")
         elif span < MIN_READABLE_SECONDS:
@@ -312,11 +316,14 @@ def verify_matches(
             verdict = REJECTED
             reasons.append("Not confident enough to place automatically.")
 
-        # Preserve everything, shifting only the times we corrected.
+        # Snapping moves the START onto a sentence boundary — usually a little
+        # earlier, so the card opens cleanly. The END must stay where it is:
+        # dragging it back by the same amount would clear the card before the
+        # speaker has finished the point.
         placed = replace(
             match,
             start_time=round(time_value, 2),
-            end_time=round(max(match.end_time + (time_value - original), time_value + 1.0), 2),
+            end_time=round(final_end, 2),
             confidence=round(score, 2),
         )
         reasons.extend(getattr(match, "notes", []) or [])

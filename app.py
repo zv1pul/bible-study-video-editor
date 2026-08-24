@@ -52,11 +52,80 @@ for key, value in DEFAULTS.items():
     st.session_state.setdefault(key, value)
 
 
+WORKDIR_PREFIX = "bible_study_editor_"
+WORKDIR_MAX_AGE_HOURS = 6
+
+
+@st.cache_resource
+def sweep_old_workdirs(max_age_hours: int = WORKDIR_MAX_AGE_HOURS) -> int:
+    """
+    Delete working folders left behind by earlier sessions.
+
+    Each session keeps a copy of the video it is working on plus the render,
+    which for a full-length lesson is well over a gigabyte. Streamlit gives no
+    reliable "session ended" hook, so instead everything older than a few
+    hours is swept on start-up. Cached so it runs once per process, not on
+    every rerun.
+    """
+    root = tempfile.gettempdir()
+    cutoff = time.time() - max_age_hours * 3600
+    removed = 0
+    try:
+        for name in os.listdir(root):
+            if not name.startswith(WORKDIR_PREFIX):
+                continue
+            path = os.path.join(root, name)
+            try:
+                if os.path.isdir(path) and os.path.getmtime(path) < cutoff:
+                    shutil.rmtree(path, ignore_errors=True)
+                    removed += 1
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return removed
+
+
 def workdir() -> str:
     if "workdir" not in st.session_state:
-        st.session_state.workdir = tempfile.mkdtemp(prefix="bible_study_editor_")
+        sweep_old_workdirs()
+        st.session_state.workdir = tempfile.mkdtemp(prefix=WORKDIR_PREFIX)
     return st.session_state.workdir
 
+
+def discard_previous_render() -> None:
+    """
+    Drop the last render before starting another.
+
+    Without this, re-rendering the same lesson three times leaves three
+    finished videos on disk for the rest of the session.
+    """
+    previous = st.session_state.get("output_path")
+    if previous and os.path.exists(previous):
+        try:
+            os.remove(previous)
+        except OSError:
+            pass
+    st.session_state.output_path = None
+
+
+def is_hosted() -> bool:
+    """
+    True when this is running on a shared server rather than someone's laptop.
+
+    Two things must change when hosted: nobody may browse the server's own
+    filesystem, and local transcription is a poor idea on a container shared
+    with other people. Set BSVE_HOSTED=1 to force it on.
+    """
+    return bool(
+        os.environ.get("BSVE_HOSTED")
+        or os.environ.get("SPACE_ID")            # Hugging Face Spaces
+        or os.environ.get("STREAMLIT_SHARING_MODE")  # Streamlit Community Cloud
+        or os.environ.get("K_SERVICE")           # Cloud Run
+    )
+
+
+HOSTED = is_hosted()
 
 ASSET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 
@@ -133,9 +202,18 @@ with st.sidebar:
 
     st.divider()
     st.subheader("Transcription")
+    engine_options = ["local", "groq"] if transcriber.LOCAL_AVAILABLE else ["groq"]
+    if not transcriber.LOCAL_AVAILABLE:
+        st.caption(
+            "faster-whisper is not installed here, so transcription runs "
+            "through the hosted service."
+        )
+    elif HOSTED:
+        engine_options = ["groq", "local"]   # hosted default: don't hog the box
+
     engine = st.radio(
         "Engine",
-        options=["local", "groq"],
+        options=engine_options,
         format_func=lambda key: {
             "local": "On this computer (faster-whisper, no key)",
             "groq": "Hosted (Groq Whisper, needs a free key)",
@@ -239,27 +317,35 @@ with st.sidebar:
 
 st.title("📖 Bible Study Video Editor")
 st.write(
-    "Upload the recording, paste in the lesson outline, and the app finds the "
-    "moment each point is taught and burns it onto the video as an on-screen caption."
+    "Upload the recording, paste in the lesson outline, and the app works out "
+    "when each point is taught — then builds the finished video with the "
+    "speaker's lower third, a full-screen card for every point, and your "
+    "intro and outro."
 )
 
 left, right = st.columns([1, 1], gap="large")
 
 with left:
     st.subheader("1 · The recording")
-    source = st.radio(
-        "Where is the recording?",
-        options=["upload", "path"],
-        format_func=lambda key: {
-            "upload": "Upload a file",
-            "path": "Use a file already on this computer",
-        }[key],
-        horizontal=True,
-        help=(
-            "A full-length lesson is often several gigabytes. Pointing at the "
-            "file on disk skips the upload entirely and starts straight away."
-        ),
-    )
+    if HOSTED:
+        # Reading an arbitrary path would mean reading the SERVER's disk, so
+        # the option is not offered at all when this is shared.
+        source = "upload"
+    else:
+        source = st.radio(
+            "Where is the recording?",
+            options=["upload", "path"],
+            format_func=lambda key: {
+                "upload": "Upload a file",
+                "path": "Use a file already on this computer",
+            }[key],
+            horizontal=True,
+            help=(
+                "A full-length lesson is often several gigabytes. Pointing at "
+                "the file on disk skips the upload entirely and starts "
+                "straight away."
+            ),
+        )
 
     uploaded = None
     local_path = ""
@@ -269,12 +355,20 @@ with left:
             type=["mp4", "mov", "m4v", "mkv", "webm"],
             accept_multiple_files=False,
         )
-        st.caption(
-            "Uploads are held in memory while they transfer. For a "
-            "full-length lesson over about 1 GB, switch to *Use a file "
-            "already on this computer* — it reads straight from disk, "
-            "starts immediately and has no size limit."
-        )
+        if HOSTED:
+            st.caption(
+                "Uploads are held in memory while they transfer, and this "
+                "shared server has a limited amount. Lessons up to about "
+                "30 minutes are comfortable here; for a full-length "
+                "recording, use a local install instead."
+            )
+        else:
+            st.caption(
+                "Uploads are held in memory while they transfer. For a "
+                "full-length lesson over about 1 GB, switch to *Use a file "
+                "already on this computer* — it reads straight from disk, "
+                "starts immediately and has no size limit."
+            )
     else:
         local_path = st.text_input(
             "Full path to the video",
@@ -336,6 +430,16 @@ def _load_source(path: str, key: str) -> None:
     """Point the app at a video and clear any results from the previous one."""
     if st.session_state.video_key == key:
         return
+
+    # Switching videos: the previous one's copy and render are now dead weight.
+    discard_previous_render()
+    old_path = st.session_state.get("video_path")
+    if old_path and old_path != path and old_path.startswith(workdir()):
+        try:
+            os.remove(old_path)
+        except OSError:
+            pass
+
     st.session_state.update(
         video_key=key, video_path=path, segments=None, matches=None,
         notes=[], output_path=None,
@@ -722,6 +826,7 @@ if st.session_state.verdicts:
         disabled=not cues,
     ):
         try:
+            discard_previous_render()
             output_path = os.path.join(workdir(), "bible_study_final.mp4")
             with st.status("Rendering…", expanded=True) as status:
                 bar = st.progress(0.0)

@@ -23,6 +23,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import tempfile
 from typing import Callable, Dict, List, Optional, Sequence
 
@@ -345,26 +346,45 @@ def _split_audio(audio_path: str, chunk_seconds: int, workdir: str) -> List[str]
 # Step 1b: transcription
 # --------------------------------------------------------------------------
 
+# One model at a time, guarded by a lock.
+#
+# Two things go wrong on a shared server otherwise: a user switching from
+# "base" to "large-v3" leaves both resident (about 3 GB between them), and two
+# people transcribing at once drive the same model object concurrently, which
+# faster-whisper does not promise to survive.
 _MODEL_CACHE: dict = {}
+_MODEL_LOCK = threading.Lock()
+_TRANSCRIBE_LOCK = threading.Lock()
+
+try:
+    import faster_whisper as _fw  # noqa: F401
+
+    LOCAL_AVAILABLE = True
+except Exception:  # pragma: no cover - depends on the install
+    LOCAL_AVAILABLE = False
 
 
 def _load_local_model(model_size: str, compute_type: str = "int8"):
     key = (model_size, compute_type)
-    if key not in _MODEL_CACHE:
-        try:
-            from faster_whisper import WhisperModel
-        except ImportError as exc:  # pragma: no cover
-            raise RuntimeError(
-                "faster-whisper is not installed. Either run "
-                "`pip install faster-whisper` or switch the transcription "
-                "engine to the hosted (Groq) option."
-            ) from exc
-        # CPU + int8 is the portable choice: identical behaviour on Mac,
-        # Windows and Linux, no GPU or CUDA install required.
-        _MODEL_CACHE[key] = WhisperModel(
-            model_size, device="cpu", compute_type=compute_type
-        )
-    return _MODEL_CACHE[key]
+    with _MODEL_LOCK:
+        if key not in _MODEL_CACHE:
+            try:
+                from faster_whisper import WhisperModel
+            except ImportError as exc:  # pragma: no cover
+                raise RuntimeError(
+                    "faster-whisper is not installed. Either run "
+                    "`pip install faster-whisper` or switch the transcription "
+                    "engine to the hosted (Groq) option."
+                ) from exc
+            # Drop any other size first: keeping "base" resident while
+            # "large-v3" loads is how a 16 GB container runs out of memory.
+            _MODEL_CACHE.clear()
+            # CPU + int8 is the portable choice: identical behaviour on Mac,
+            # Windows and Linux, no GPU or CUDA install required.
+            _MODEL_CACHE[key] = WhisperModel(
+                model_size, device="cpu", compute_type=compute_type
+            )
+        return _MODEL_CACHE[key]
 
 
 def _transcribe_local(
@@ -380,6 +400,13 @@ def _transcribe_local(
     total = probe_duration(audio_path) or 0.0
     _report(progress_cb, 0.2, "Transcribing…")
 
+    # One transcription at a time: the model object is shared.
+    with _TRANSCRIBE_LOCK:
+        return _decode(model, audio_path, language, word_timestamps,
+                       progress_cb, total)
+
+
+def _decode(model, audio_path, language, word_timestamps, progress_cb, total):
     raw_segments, _info = model.transcribe(
         audio_path,
         beam_size=1,                     # greedy decoding: faster, ample accuracy

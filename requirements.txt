@@ -1,10 +1,15 @@
 # Bible Study Video Editor - everything here is free and open source.
-streamlit>=1.50
-moviepy>=2.1.2          # v2 draws text with Pillow: no ImageMagick needed
-imageio-ffmpeg>=0.5.1   # ships an FFmpeg binary for Mac/Windows/Linux
-Pillow>=10.1
-numpy>=1.26
-pandas>=2.0
-requests>=2.32
-proglog>=0.1.10
-faster-whisper>=1.1.0   # local transcription; drop this line for API-only use
+#
+# Upper bounds are deliberate. This tool is meant to keep working untouched
+# for a long time, and an unpinned dependency that jumps a major version is
+# the most likely way for it to break on a machine nobody has touched in a
+# year. Raise a ceiling only after testing against the new major.
+streamlit>=1.50,<2          # width= parameter; use_container_width is retired
+moviepy>=2.1.2,<3           # v2 draws text with Pillow: no ImageMagick needed
+imageio-ffmpeg>=0.5.1,<1    # ships an FFmpeg binary for Mac/Windows/Linux
+Pillow>=10.1,<13
+numpy>=1.26,<3
+pandas>=2.0,<4
+requests>=2.32,<3
+proglog>=0.1.10,<1
+faster-whisper>=1.1.0,<2    # local transcription; drop this line for API-only use

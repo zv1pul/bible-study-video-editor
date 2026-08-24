@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Dict, List, Optional, Sequence
 
@@ -657,6 +657,68 @@ def _call_once(prompt: str, provider: str, api_key: str, model: str) -> str:
     raise ProviderError(f"Unknown provider '{provider}'.")
 
 
+_DISCOVERED: Dict[str, List[str]] = {}
+
+
+def discover_models(provider: str, api_key: str) -> List[str]:
+    """
+    Ask the provider what it currently offers.
+
+    The hard-coded chain will not last forever — `gemini-2.5-flash` was
+    retired out from under this project during development. When every model
+    in the chain has gone, this asks the provider for its live list and picks
+    the fast general-purpose ones, newest first, so the tool repairs itself
+    instead of needing a code change.
+    """
+    if provider in _DISCOVERED:
+        return _DISCOVERED[provider]
+
+    found: List[str] = []
+    try:
+        info = PROVIDERS.get(provider, {})
+        url = info.get("list_url", "")
+        if not url:
+            return []
+        if provider == "gemini":
+            response = requests.get(
+                url, headers={"x-goog-api-key": api_key},
+                params={"pageSize": 200}, timeout=60,
+            )
+            if response.status_code != 200:
+                return []
+            for model in response.json().get("models", []):
+                name = str(model.get("name", "")).replace("models/", "")
+                if "generateContent" not in (
+                    model.get("supportedGenerationMethods") or []
+                ):
+                    continue
+                # Text models only: skip image, audio, embedding and research.
+                if any(word in name for word in
+                       ("image", "tts", "embedding", "banana", "robotics",
+                        "deep-research", "computer-use", "lyria", "omni")):
+                    continue
+                if "flash" in name or "pro" in name:
+                    found.append(name)
+        else:
+            response = requests.get(
+                url, headers={"Authorization": f"Bearer {api_key}"}, timeout=60
+            )
+            if response.status_code != 200:
+                return []
+            for model in response.json().get("data", []):
+                name = str(model.get("id", ""))
+                if "whisper" in name or "tts" in name or "guard" in name:
+                    continue
+                found.append(name)
+    except Exception:
+        return []
+
+    # Prefer flash-class models: cheaper, faster, and ample for this job.
+    found.sort(key=lambda n: (0 if "flash" in n else 1, n), reverse=False)
+    _DISCOVERED[provider] = found[:8]
+    return _DISCOVERED[provider]
+
+
 def call_with_failover(
     prompt: str,
     provider: str,
@@ -665,6 +727,8 @@ def call_with_failover(
     *,
     attempts_per_model: int = 3,
     on_event=None,
+    _chain_override: Optional[List[str]] = None,
+    _discovered_round: bool = False,
 ) -> tuple:
     """
     Ask the provider, and keep going when things break.
@@ -675,7 +739,8 @@ def call_with_failover(
     when every model in the chain has been exhausted.
     """
     log: List[str] = []
-    chain = resolve_chain(provider, model)
+    discovered_round = _discovered_round
+    chain = _chain_override or resolve_chain(provider, model)
     if not chain:
         raise ProviderError(f"No models configured for provider '{provider}'.")
 
@@ -707,6 +772,24 @@ def call_with_failover(
                 note(f"{model_name} attempt {attempt} failed ({exc.status}); "
                      f"retrying in {delay:.0f}s.")
                 time.sleep(delay)
+
+    # Everything we knew about is gone or unavailable. Ask the provider what
+    # it has now and try those before giving up.
+    if not discovered_round:
+        live = [m for m in discover_models(provider, api_key) if m not in chain]
+        if live:
+            note(
+                "None of the known models answered; trying "
+                f"{len(live)} currently offered by the provider."
+            )
+            try:
+                return call_with_failover(
+                    prompt, provider, api_key, model,
+                    attempts_per_model=1, on_event=on_event,
+                    _chain_override=live, _discovered_round=True,
+                )
+            except ProviderError as exc:
+                last = exc
 
     raise ProviderError(
         f"Every model was unavailable. Last error: {last}",
