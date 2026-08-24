@@ -28,6 +28,10 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Dict, List, Optional, Sequence
 
+import hashlib
+import os
+import time as _time
+
 import requests
 
 from transcriber import (
@@ -250,11 +254,27 @@ def header_for(point: LessonPoint, points: Sequence[LessonPoint]) -> str:
 
 
 # Beyond this the per-segment transcript is merged into coarser windows to
-# keep the prompt sane. Roughly six hours of speech at normal density.
+# keep the prompt sane. Gemini takes a very large context; the Llama models
+# used as backup take far less, so a lesson that fits comfortably in one may
+# be refused by the other. Each provider gets a transcript sized for it.
 MAX_PROMPT_CHARS = 300_000
+PROVIDER_PROMPT_CHARS = {
+    "gemini": 300_000,     # ~75k tokens; Gemini's context is far larger again
+    "groq": 200_000,       # ~50k tokens, comfortably inside a 128k context
+}
+
+# Merging windows strips timestamps, not words, so it can only shrink a
+# transcript so far. If even the widest window overshoots, the lesson is
+# longer than the backup provider can take in one request and the caller is
+# told rather than left with a silent truncation.
+MAX_MERGE_WINDOW = 60.0
 
 
-def transcript_for_prompt(segments: Sequence[Segment], duration: float = 0.0) -> str:
+def transcript_for_prompt(
+    segments: Sequence[Segment],
+    duration: float = 0.0,
+    max_chars: int = MAX_PROMPT_CHARS,
+) -> str:
     """
     The transcript as the model sees it.
 
@@ -263,10 +283,16 @@ def transcript_for_prompt(segments: Sequence[Segment], duration: float = 0.0) ->
     send is merged into coarser windows.
     """
     detailed = format_transcript(segments)
-    if len(detailed) <= MAX_PROMPT_CHARS:
+    if len(detailed) <= max_chars:
         return detailed
-    window = 12.0 if duration < 3600 else 20.0
-    return compact_transcript(segments, window=window)
+    # Widen the merge window until it fits, rather than truncating and losing
+    # the end of the lesson entirely.
+    merged = detailed
+    for window in (12.0, 20.0, 30.0, 45.0, MAX_MERGE_WINDOW):
+        merged = compact_transcript(segments, window=window)
+        if len(merged) <= max_chars:
+            return merged
+    return merged
 
 
 def compact_transcript(segments: Sequence[Segment], window: float = 12.0) -> str:
@@ -525,10 +551,19 @@ _BAD_KEY_HINTS = (
 class ProviderError(RuntimeError):
     """A call failed. `retryable` says whether trying again could help."""
 
-    def __init__(self, message: str, status: int = 0, retryable: bool = False):
+    def __init__(self, message: str, status: int = 0, retryable: bool = False,
+                 quota_scope: str = "", retry_after: float = 0.0):
         super().__init__(message)
         self.status = status
         self.retryable = retryable
+        # "day", "minute" or "" — a daily quota will not recover while
+        # somebody waits, so there is no point retrying it at all.
+        self.quota_scope = quota_scope
+        self.retry_after = retry_after
+
+    @property
+    def exhausted_for_today(self) -> bool:
+        return self.status == 429 and self.quota_scope == "day"
 
     @property
     def is_auth_failure(self) -> bool:
@@ -544,6 +579,35 @@ class ProviderError(RuntimeError):
             return True
         text = str(self).lower()
         return any(hint in text for hint in _BAD_KEY_HINTS)
+
+
+def _quota_details(payload: dict) -> tuple:
+    """
+    Pull the quota scope and retry delay out of a Google error body.
+
+    A 429 can mean "too fast, wait a moment" or "that is your allowance for
+    the day". They need opposite handling, and only the details say which.
+    """
+    scope, retry_after = "", 0.0
+    try:
+        for detail in (payload.get("error", {}) or {}).get("details", []) or []:
+            kind = str(detail.get("@type", "")).rsplit(".", 1)[-1]
+            if kind == "QuotaFailure":
+                for violation in detail.get("violations", []) or []:
+                    quota_id = str(violation.get("quotaId", ""))
+                    if "PerDay" in quota_id:
+                        scope = "day"
+                    elif "PerMinute" in quota_id and scope != "day":
+                        scope = "minute"
+            elif kind == "RetryInfo":
+                raw = str(detail.get("retryDelay", "")).rstrip("s")
+                try:
+                    retry_after = float(raw)
+                except ValueError:
+                    pass
+    except Exception:
+        pass
+    return scope, retry_after
 
 
 def _post(url: str, *, headers: dict, payload: dict, timeout: int):
@@ -580,13 +644,23 @@ def _call_gemini(prompt: str, api_key: str, model: str, timeout: int = 240) -> s
     )
     if response.status_code != 200:
         try:
-            message = response.json().get("error", {}).get("message", response.text)
+            body = response.json()
+            message = body.get("error", {}).get("message", response.text)
         except ValueError:
-            message = response.text
+            body, message = {}, response.text
+        scope, retry_after = _quota_details(body)
+        if scope == "day":
+            message = (
+                f"the free allowance for {model} is used up for today "
+                "(20 requests per model per day)"
+            )
         raise ProviderError(
             f"{model}: {str(message)[:200]}",
             response.status_code,
-            response.status_code in RETRYABLE_STATUS,
+            # A daily allowance does not come back while somebody waits.
+            response.status_code in RETRYABLE_STATUS and scope != "day",
+            quota_scope=scope,
+            retry_after=retry_after,
         )
 
     data = response.json()
@@ -655,6 +729,98 @@ def _call_once(prompt: str, provider: str, api_key: str, model: str) -> str:
     if provider == "groq":
         return _call_groq(prompt, api_key, model)
     raise ProviderError(f"Unknown provider '{provider}'.")
+
+
+# --------------------------------------------------------------------------
+# Answer cache and usage log
+# --------------------------------------------------------------------------
+#
+# The free tier allows 20 requests per model per day. That makes a repeated
+# question genuinely expensive, so identical questions are answered from disk
+# and never sent twice.
+
+CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache")
+CACHE_MAX_AGE_DAYS = 30
+DAILY_FREE_REQUESTS = 20
+
+
+def _cache_path(name: str) -> str:
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    return os.path.join(CACHE_DIR, name)
+
+
+def prompt_key(prompt: str, provider: str) -> str:
+    digest = hashlib.sha256(f"{provider}\n{prompt}".encode("utf-8")).hexdigest()
+    return f"answer_{digest[:32]}.json"
+
+
+def cache_get(prompt: str, provider: str) -> Optional[tuple]:
+    """A previous answer to exactly this question, if we still have it."""
+    path = _cache_path(prompt_key(prompt, provider))
+    try:
+        if not os.path.exists(path):
+            return None
+        if _time.time() - os.path.getmtime(path) > CACHE_MAX_AGE_DAYS * 86400:
+            os.remove(path)
+            return None
+        with open(path, "r", encoding="utf-8") as handle:
+            saved = json.load(handle)
+        return saved.get("raw", ""), saved.get("model", "")
+    except Exception:
+        return None
+
+
+def cache_put(prompt: str, provider: str, raw: str, model: str) -> None:
+    try:
+        with open(_cache_path(prompt_key(prompt, provider)), "w",
+                  encoding="utf-8") as handle:
+            json.dump({"raw": raw, "model": model}, handle)
+    except Exception:
+        pass
+
+
+def _usage_path() -> str:
+    return _cache_path("usage.json")
+
+
+def _today() -> str:
+    return _time.strftime("%Y-%m-%d")
+
+
+def record_call(provider: str, model: str) -> None:
+    """Count a request so the interface can show what is left."""
+    try:
+        data = {}
+        if os.path.exists(_usage_path()):
+            with open(_usage_path(), "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        day = data.get(_today(), {})
+        key = f"{provider}:{model}"
+        day[key] = day.get(key, 0) + 1
+        # Keep today only; yesterday's counts are of no use to anyone.
+        with open(_usage_path(), "w", encoding="utf-8") as handle:
+            json.dump({_today(): day}, handle)
+    except Exception:
+        pass
+
+
+def usage_today() -> Dict[str, int]:
+    try:
+        if not os.path.exists(_usage_path()):
+            return {}
+        with open(_usage_path(), "r", encoding="utf-8") as handle:
+            return json.load(handle).get(_today(), {})
+    except Exception:
+        return {}
+
+
+def remaining_today(provider: str) -> List[tuple]:
+    """[(model, used, allowance), ...] for the configured chain."""
+    used = usage_today()
+    return [
+        (m, used.get(f"{provider}:{m}", 0), DAILY_FREE_REQUESTS)
+        for m in PROVIDERS.get(provider, {}).get("chain", [])
+    ]
 
 
 _DISCOVERED: Dict[str, List[str]] = {}
@@ -727,6 +893,9 @@ def call_with_failover(
     *,
     attempts_per_model: int = 3,
     on_event=None,
+    other_keys: Optional[Dict[str, str]] = None,
+    alt_prompts: Optional[Dict[str, str]] = None,
+    use_cache: bool = True,
     _chain_override: Optional[List[str]] = None,
     _discovered_round: bool = False,
 ) -> tuple:
@@ -752,11 +921,22 @@ def call_with_failover(
             except Exception:
                 pass
 
+    # Asking the same question twice is the easiest way to waste an allowance
+    # of twenty requests a day.
+    if use_cache and not _discovered_round:
+        cached = cache_get(prompt, provider)
+        if cached and cached[0].strip():
+            note(f"Reused the saved answer from {cached[1] or 'earlier'} — no request needed.")
+            return cached[0], cached[1], log
+
     last: Optional[ProviderError] = None
     for model_name in chain:
         for attempt in range(1, attempts_per_model + 1):
             try:
                 text = _call_once(prompt, provider, api_key, model_name)
+                record_call(provider, model_name)
+                if use_cache:
+                    cache_put(prompt, provider, text, model_name)
                 if attempt > 1 or model_name != chain[0]:
                     note(f"Answered by {model_name} (attempt {attempt}).")
                 return text, model_name, log
@@ -765,10 +945,15 @@ def call_with_failover(
                 if exc.is_auth_failure:
                     note("The API key was rejected — check it in the sidebar.")
                     raise
+                if exc.exhausted_for_today:
+                    note(f"{model_name}: today's free allowance is used up.")
+                    break  # no amount of waiting brings a daily quota back
                 if not exc.retryable or attempt == attempts_per_model:
                     note(f"{model_name} failed: {exc}")
                     break
-                delay = min(2 ** (attempt - 1) * 1.5, 12.0)
+                # The provider usually says how long to wait; trust it over a
+                # guess, but never stall the user for more than 15 seconds.
+                delay = min(exc.retry_after or 2 ** (attempt - 1) * 1.5, 15.0)
                 note(f"{model_name} attempt {attempt} failed ({exc.status}); "
                      f"retrying in {delay:.0f}s.")
                 time.sleep(delay)
@@ -790,6 +975,23 @@ def call_with_failover(
                 )
             except ProviderError as exc:
                 last = exc
+
+    # Every Gemini model exhausted does not mean every provider is exhausted.
+    # Groq keeps a completely separate free allowance, so a key for it is a
+    # genuine second tank of fuel rather than a different label on the same one.
+    for other, other_key in (other_keys or {}).items():
+        if other == provider or not other_key:
+            continue
+        note(f"{provider} is exhausted — switching to {PROVIDERS.get(other, {}).get('label', other)}.")
+        try:
+            return call_with_failover(
+                (alt_prompts or {}).get(other, prompt),
+                other, other_key, "auto",
+                attempts_per_model=attempts_per_model, on_event=on_event,
+                use_cache=use_cache,
+            )
+        except ProviderError as exc:
+            last = exc
 
     raise ProviderError(
         f"Every model was unavailable. Last error: {last}",
@@ -1070,6 +1272,8 @@ def match_lesson_points(
     speaker_title: str = "",
     silences: Sequence[dict] = (),
     include_lower_third: bool = True,
+    other_keys: Optional[Dict[str, str]] = None,
+    use_cache: bool = True,
     progress_cb=None,
 ) -> tuple:
     """
@@ -1109,11 +1313,22 @@ def match_lesson_points(
         notes.append("No API key supplied — used the offline keyword matcher.")
         return finish(_fallback_elements(points, segments, duration), "")
 
-    transcript_text, clean_notes = sanitise_transcript(
-        transcript_for_prompt(segments, duration)
-    )
+    def prompt_for(target: str) -> str:
+        text, extra = sanitise_transcript(
+            transcript_for_prompt(
+                segments, duration,
+                PROVIDER_PROMPT_CHARS.get(target, MAX_PROMPT_CHARS),
+            )
+        )
+        return build_prompt(points, text, duration, speaker, silences), extra
+
+    prompt, clean_notes = prompt_for(provider)
     notes.extend(clean_notes)
-    prompt = build_prompt(points, transcript_text, duration, speaker, silences)
+    alt_prompts = {
+        name: prompt_for(name)[0]
+        for name in (other_keys or {})
+        if name != provider and (other_keys or {}).get(name)
+    }
 
     data, model_used = None, ""
     for attempt in range(2):
@@ -1128,6 +1343,8 @@ def match_lesson_points(
             raw, model_used, _log = call_with_failover(
                 ask, provider, api_key, model,
                 on_event=lambda message: notes.append(message),
+                other_keys=other_keys, alt_prompts=alt_prompts,
+                use_cache=use_cache,
             )
             data = extract_json(raw)
 

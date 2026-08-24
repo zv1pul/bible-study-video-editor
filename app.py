@@ -196,9 +196,40 @@ with st.sidebar:
         value=True,
         help="Runs the matching twice using two different models and compares "
              "the answers. Points both models agree on are marked verified. "
-             "Roughly doubles the matching time, which is seconds, not minutes.",
+             "It uses a second model, so it draws on that model's separate "
+             "daily allowance rather than doubling up on the first.",
     )
-    st.caption(f"Get a free key → {provider_info['key_url']}")
+    backup_provider = "groq" if provider == "gemini" else "gemini"
+    backup_key = st.text_input(
+        f"Backup key — {matcher.PROVIDERS[backup_provider]['label']}",
+        value=secret("GROQ_API_KEY" if backup_provider == "groq" else "GEMINI_API_KEY"),
+        type="password",
+        help="A completely separate free allowance. When the first provider "
+             "is used up for the day, the app switches to this instead of "
+             "dropping to offline matching.",
+    )
+    st.caption(
+        f"Get free keys → [{provider}]({provider_info['key_url']}) · "
+        f"[{backup_provider}]({matcher.PROVIDERS[backup_provider]['key_url']})"
+    )
+
+    # --- what is left of today's free allowance --------------------------
+    with st.expander("Today's free usage", expanded=False):
+        rows = matcher.remaining_today(provider)
+        total_used = sum(u for _, u, _ in rows)
+        total_cap = sum(c for _, _, c in rows)
+        st.progress(
+            min(total_used / max(total_cap, 1), 1.0),
+            text=f"{total_used} of {total_cap} requests used today",
+        )
+        for name, used, cap in rows:
+            bar = "█" * min(used, cap) + "·" * max(cap - used, 0)
+            st.caption(f"`{bar}` {name} — {used}/{cap}")
+        st.caption(
+            f"The free tier allows {matcher.DAILY_FREE_REQUESTS} requests per "
+            "model per day. Repeating an analysis you have already run costs "
+            "nothing — the answer is reused."
+        )
 
     st.divider()
     st.subheader("Transcription")
@@ -548,6 +579,7 @@ if st.button("🔍 Analyse recording", type="primary", disabled=not ready, width
                 speaker=speaker_name,
                 speaker_title=speaker_title,
                 silences=silences,
+                other_keys={backup_provider: backup_key.strip()},
                 progress_cb=on_progress,
             )
             if model_used:
@@ -572,6 +604,7 @@ if st.button("🔍 Analyse recording", type="primary", disabled=not ready, width
                         speaker=speaker_name,
                         speaker_title=speaker_title,
                         silences=silences,
+                        other_keys={backup_provider: backup_key.strip()},
                     )
                     if not second_used:
                         second = None

@@ -68,6 +68,33 @@ Every point ends up marked **✅ verified**, **⚠️ worth a look**, or
 **switched off by default**, so a bad placement cannot reach your video
 through inattention.
 
+### Staying inside the free allowance
+
+The Gemini free tier allows **20 requests per model per day**. That is the
+real constraint on this tool, so four things protect it:
+
+* **Answers are cached.** Re-running an analysis you have already done costs
+  nothing at all — the saved answer is reused and no request is sent. Change
+  the outline or the video and it asks again. Cached answers are kept for 30
+  days in `.cache/` (never committed).
+* **Exhausted models are skipped instantly.** A 429 can mean "slow down for a
+  moment" or "that is your allowance for the day", and the app now reads
+  which. A daily exhaustion is not retried, because no amount of waiting
+  brings it back — it moves straight to the next model.
+* **The chain spreads the load.** Four models at 20 a day is 80 requests, and
+  the second-opinion check deliberately uses a *different* model so it draws
+  on a separate allowance rather than doubling up on the first.
+* **A backup provider is a second tank.** Groq's free tier is counted
+  separately from Google's. Put a Groq key in the sidebar and when Gemini is
+  finished for the day the app switches over instead of dropping to offline
+  matching.
+
+The sidebar shows what is left: **Today's free usage**, per model.
+
+If several people share one key you will exhaust it faster. The simplest fix
+is for each person to paste their own free key — it takes a minute to get one
+and the allowances are then per-person.
+
 ### When things break
 
 Models get retired, rate limited and overloaded without warning — during
@@ -439,6 +466,7 @@ ever see *"FFmpeg was not found"*:
 | **Header** (per row) | The bold line at the top of the card. Edit freely — a scripture reference works as well as "Principle #1". |
 | **Soften the cuts** | Off matches the reference (hard cuts). |
 | **Model** | Leave on `auto` unless you want to pin one. |
+| **Backup key** | A key for the *other* provider. Separate free allowance, used automatically when the first runs out. Worth setting. |
 | **Double-check with a second model** | Leave on. It is the difference between "the AI said so" and "two models agreed". Costs seconds. |
 
 ---
@@ -513,7 +541,8 @@ render_video(
 | Every point matched to roughly the same moment | The AI could not tell them apart. Write the outline points as fuller sentences, or fix the times in the table. |
 | *"used the offline keyword matcher"* | No key, a wrong key, or no internet. Check the key in the sidebar. Expect to fix several times by hand in this mode. |
 | *"The API key was rejected"* | The key is wrong or has been revoked. Get a fresh one at the link in the sidebar. |
-| *"Every model was unavailable"* | The provider is having a bad day. Wait a few minutes, or switch provider in the sidebar. |
+| *"Every model was unavailable"* | Every model is rate limited or down. Add a backup key from the other provider, or wait — daily allowances reset. |
+| *"today's free allowance is used up"* | That model's 20 requests for the day are gone. The app moves on automatically; check **Today's free usage** in the sidebar. |
 | Lots of ⚠️ or ⛔ rows | The outline is worded very differently from how it was taught, or the audio is hard to hear. Read the **Checks** column — it says which test failed. |
 | *"N point(s) are too close to the end"* | Two points landed within a few seconds of the finish. Move them earlier in the table. |
 | Cards look tiny or use an odd typeface | No system font was found. Drop a `.ttf` into `fonts/` — see `fonts/README.txt`. |
