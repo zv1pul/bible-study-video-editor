@@ -43,12 +43,23 @@ about uploads large enough to exhaust it.
 ### What to expect
 
 The free plan gives roughly **1 GB of memory** for everything — the Python
-process, the upload, and the render.
+process, the recording, and the render.
 
-* Comfortable up to about a 30-minute lesson.
+Measured on a full 1080p lesson, rendering itself peaks at about **130 MB**.
+It is not the demanding part. The demanding part is the *recording*: a browser
+upload is held in memory for the whole session, so a 500 MB file occupies
+500 MB the entire time it is being worked on, and that is what exhausts the
+container.
+
+So on the hosted app, **paste a link instead of uploading**. A link is
+streamed to disk a megabyte at a time and never sits in memory — verified at
+5 MB of growth while fetching a 16 MB file. Google Drive and Dropbox share
+links both work; set Drive sharing to "Anyone with the link" first.
+
+* Uploads are capped at 400 MB and warn above 250 MB.
+* A link has no practical limit.
 * One person renders at a time; a second waits.
 * The app sleeps after 12 quiet hours and wakes when somebody visits.
-* Uploads are held in memory as they transfer, so the app warns above 400 MB.
 
 For a full-length lesson, use a local install. Sending several gigabytes to a
 shared container is slower than reading the file off the desk, and more

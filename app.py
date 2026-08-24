@@ -42,6 +42,7 @@ DEFAULTS = {
     "video_info": None,
     "segments": None,
     "silences": None,
+    "fetched_path": None,
     "matches": None,
     "verdicts": None,
     "notes": [],
@@ -127,8 +128,12 @@ def is_hosted() -> bool:
 
 HOSTED = is_hosted()
 
-# Above this an upload is likely to exhaust a small hosted container.
-HOSTED_UPLOAD_WARN_MB = 400
+# A browser upload is held in memory for the whole session, so on a small
+# hosted container it — not the rendering — is what runs the machine out of
+# memory. Measured: a full 1080p render peaks at about 130 MB, while a 500 MB
+# upload sits in RAM the entire time it is being worked on.
+HOSTED_UPLOAD_WARN_MB = 250
+HOSTED_UPLOAD_MAX_MB = 400
 
 ASSET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 
@@ -363,29 +368,57 @@ left, right = st.columns([1, 1], gap="large")
 
 with left:
     st.subheader("1 · The recording")
-    if HOSTED:
-        # Reading an arbitrary path would mean reading the SERVER's disk, so
-        # the option is not offered at all when this is shared.
-        source = "upload"
-    else:
-        source = st.radio(
-            "Where is the recording?",
-            options=["upload", "path"],
-            format_func=lambda key: {
-                "upload": "Upload a file",
-                "path": "Use a file already on this computer",
-            }[key],
-            horizontal=True,
-            help=(
-                "A full-length lesson is often several gigabytes. Pointing at "
-                "the file on disk skips the upload entirely and starts "
-                "straight away."
-            ),
-        )
+    # Reading an arbitrary path would mean reading the SERVER's disk, so that
+    # option is never offered when shared. A link is offered instead: it
+    # streams to disk a megabyte at a time and never sits in memory.
+    options = ["link", "upload"] if HOSTED else ["path", "upload", "link"]
+    source = st.radio(
+        "Where is the recording?",
+        options=options,
+        format_func=lambda key: {
+            "link": "Paste a link" + (" (recommended)" if HOSTED else ""),
+            "upload": "Upload a file",
+            "path": "Use a file already on this computer",
+        }[key],
+        horizontal=True,
+        help=(
+            "A link is fetched straight to disk, so a large recording will "
+            "not exhaust this shared server. An upload is held in memory the "
+            "whole time."
+            if HOSTED else
+            "A full-length lesson is often several gigabytes. Pointing at the "
+            "file on disk skips the copy entirely and starts straight away."
+        ),
+    )
 
     uploaded = None
     local_path = ""
-    if source == "upload":
+    link_url = ""
+
+    if source == "link":
+        link_url = st.text_input(
+            "Link to the video",
+            placeholder="https://drive.google.com/file/d/…/view",
+            help="Google Drive and Dropbox links work. In Drive, set sharing "
+                 "to 'Anyone with the link' first.",
+        ).strip()
+        if link_url and st.button("Fetch this recording", width="stretch"):
+            try:
+                target = os.path.join(workdir(), "source_from_link.mp4")
+                bar = st.progress(0.0)
+                line = st.empty()
+                transcriber.download_video(
+                    link_url, target,
+                    max_bytes=(HOSTED_UPLOAD_MAX_MB * 4 * 1024 * 1024) if HOSTED else 0,
+                    progress_cb=lambda f, m: (bar.progress(min(max(f, 0.0), 1.0)),
+                                              line.write(m)),
+                )
+                st.session_state.fetched_path = target
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
+
+    elif source == "upload":
         uploaded = st.file_uploader(
             "Video file",
             type=["mp4", "mov", "m4v", "mkv", "webm"],
@@ -398,13 +431,21 @@ with left:
                 "roughly 30 minutes are comfortable here; for a full-length "
                 "recording, use a local install instead."
             )
-            if uploaded is not None and uploaded.size > HOSTED_UPLOAD_WARN_MB * 1024 * 1024:
-                st.warning(
-                    f"That file is {uploaded.size / (1024 * 1024):.0f} MB. On "
-                    "this shared server the app may run out of memory part "
-                    "way through. If it does, run it on your own computer "
-                    "instead — there is no size limit there."
-                )
+            if uploaded is not None:
+                size_mb = uploaded.size / (1024 * 1024)
+                if size_mb > HOSTED_UPLOAD_MAX_MB:
+                    st.error(
+                        f"That file is {size_mb:.0f} MB, which would run this "
+                        "shared server out of memory part way through. Paste a "
+                        "link to it instead — that streams to disk and has no "
+                        "practical limit."
+                    )
+                    uploaded = None
+                elif size_mb > HOSTED_UPLOAD_WARN_MB:
+                    st.warning(
+                        f"That file is {size_mb:.0f} MB. It may work, but a "
+                        "link is safer on a shared server."
+                    )
         else:
             st.caption(
                 "Uploads are held in memory while they transfer. For a "
@@ -494,7 +535,11 @@ def _load_source(path: str, key: str) -> None:
         st.error(f"Could not read that video file: {exc}")
 
 
-if local_path and os.path.exists(local_path):
+fetched = st.session_state.get("fetched_path")
+if source == "link" and fetched and os.path.exists(fetched):
+    stat = os.stat(fetched)
+    _load_source(fetched, f"{fetched}-{stat.st_size}-{int(stat.st_mtime)}")
+elif local_path and os.path.exists(local_path):
     stat = os.stat(local_path)
     # Read straight from disk: no copy, no upload, works for any file size.
     _load_source(local_path, f"{local_path}-{stat.st_size}-{int(stat.st_mtime)}")

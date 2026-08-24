@@ -162,6 +162,99 @@ def has_video_track(media_path: str) -> bool:
 
 
 # --------------------------------------------------------------------------
+# Fetching a recording from a link
+# --------------------------------------------------------------------------
+
+DOWNLOAD_CHUNK = 1024 * 1024
+
+
+def direct_download_url(url: str) -> str:
+    """
+    Turn a share link into one that returns the file itself.
+
+    Google Drive and Dropbox both hand out links to a preview page rather than
+    to the video, which would otherwise download a few kilobytes of HTML.
+    """
+    url = (url or "").strip()
+    drive = re.search(r"drive\.google\.com/file/d/([A-Za-z0-9_-]+)", url)
+    if drive:
+        return f"https://drive.google.com/uc?export=download&id={drive.group(1)}"
+    drive_open = re.search(r"drive\.google\.com/open\?id=([A-Za-z0-9_-]+)", url)
+    if drive_open:
+        return f"https://drive.google.com/uc?export=download&id={drive_open.group(1)}"
+    if "dropbox.com" in url:
+        stripped = re.sub(r"[?&]dl=[01]", "", url)
+        # The separator depends on whether any other query remains.
+        return stripped + ("&" if "?" in stripped else "?") + "dl=1"
+    return url
+
+
+def download_video(
+    url: str,
+    destination: str,
+    max_bytes: int = 0,
+    progress_cb: ProgressCallback = None,
+) -> str:
+    """
+    Stream a recording from a link straight to disk.
+
+    Never holds the file in memory, which is the whole point: a browser upload
+    is buffered in RAM and will exhaust a small server, while this touches
+    only a megabyte at a time however large the video is.
+    """
+    resolved = direct_download_url(url)
+    _report(progress_cb, 0.01, "Fetching the recording…")
+
+    with requests.get(resolved, stream=True, timeout=60,
+                      headers={"User-Agent": "Mozilla/5.0"}) as response:
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"Could not fetch that link ({response.status_code}). Check it "
+                "is shared so that anyone with the link can view it."
+            )
+
+        kind = response.headers.get("content-type", "")
+        if "text/html" in kind:
+            raise RuntimeError(
+                "That link returned a web page rather than a video. For Google "
+                "Drive, set sharing to 'Anyone with the link'. Very large "
+                "Drive files cannot be fetched this way — download it and "
+                "upload the file instead."
+            )
+
+        declared = int(response.headers.get("content-length") or 0)
+        if max_bytes and declared > max_bytes:
+            raise RuntimeError(
+                f"That file is {declared / 1e6:.0f} MB, over the "
+                f"{max_bytes / 1e6:.0f} MB limit for this server."
+            )
+
+        written = 0
+        with open(destination, "wb") as handle:
+            for block in response.iter_content(chunk_size=DOWNLOAD_CHUNK):
+                if not block:
+                    continue
+                handle.write(block)
+                written += len(block)
+                if max_bytes and written > max_bytes:
+                    handle.close()
+                    os.remove(destination)
+                    raise RuntimeError(
+                        f"That file is larger than the {max_bytes / 1e6:.0f} MB "
+                        "limit for this server."
+                    )
+                if declared:
+                    _report(progress_cb, min(written / declared, 1.0),
+                            f"Fetching… {written / 1e6:.0f} of {declared / 1e6:.0f} MB")
+
+    if written < 1024:
+        os.remove(destination)
+        raise RuntimeError("That link produced an empty file.")
+    _report(progress_cb, 1.0, f"Fetched {written / 1e6:.0f} MB.")
+    return destination
+
+
+# --------------------------------------------------------------------------
 # Silence detection
 # --------------------------------------------------------------------------
 
