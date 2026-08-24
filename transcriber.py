@@ -24,6 +24,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 import tempfile
 from typing import Callable, Dict, List, Optional, Sequence
 
@@ -321,14 +322,27 @@ def extract_audio(
     return output_audio_path
 
 
+# A piece smaller than this holds no real speech and only upsets the API.
+MIN_CHUNK_BYTES = 4096
+
+
 def _split_audio(audio_path: str, chunk_seconds: int, workdir: str) -> List[str]:
-    """Cut a long audio file into fixed-length pieces for the hosted API."""
+    """
+    Cut a long recording into pieces the hosted API will accept.
+
+    `-reset_timestamps 1` is essential and easy to miss. Without it the copied
+    packets keep their position in the original stream, so the second piece
+    declares itself twenty minutes long while containing only the last five,
+    and the service rejects it with a 500. Each piece has to begin at zero and
+    describe its own length honestly.
+    """
     pattern = os.path.join(workdir, "chunk_%04d.ogg")
     result = _run([
         ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error",
         "-i", audio_path,
         "-f", "segment",
         "-segment_time", str(chunk_seconds),
+        "-reset_timestamps", "1",
         "-c", "copy",
         pattern,
     ])
@@ -337,6 +351,9 @@ def _split_audio(audio_path: str, chunk_seconds: int, workdir: str) -> List[str]
         for name in os.listdir(workdir)
         if name.startswith("chunk_")
     )
+    # Drop anything too small to hold speech; a trailing fragment is common.
+    chunks = [c for c in chunks if os.path.getsize(c) >= MIN_CHUNK_BYTES]
+
     if result.returncode != 0 or not chunks:
         return [audio_path]
     return chunks
@@ -446,6 +463,53 @@ def _decode(model, audio_path, language, word_timestamps, progress_cb, total):
     return results
 
 
+class _Transient(RuntimeError):
+    """A failure worth trying again: rate limit, overload, or a server wobble."""
+
+    def __init__(self, message: str, retry_after: float = 0.0):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+def _post_chunk(chunk: str, api_key: str, language, granularities) -> dict:
+    """Send one piece of audio for transcription."""
+    with open(chunk, "rb") as handle:
+        form: List[tuple] = [
+            ("model", GROQ_TRANSCRIBE_MODEL),
+            ("response_format", "verbose_json"),
+            ("temperature", "0"),
+        ]
+        for level in granularities:
+            form.append(("timestamp_granularities[]", level))
+        if language:
+            form.append(("language", language))
+
+        response = requests.post(
+            GROQ_TRANSCRIBE_URL,
+            headers={"Authorization": f"Bearer {api_key}"},
+            files={"file": (os.path.basename(chunk), handle, "audio/ogg")},
+            data=form,
+            timeout=600,
+        )
+
+    if response.status_code == 200:
+        return response.json()
+
+    detail = response.text[:300]
+    if response.status_code in (408, 429, 500, 502, 503, 504):
+        try:
+            retry_after = float(response.headers.get("retry-after", 0) or 0)
+        except ValueError:
+            retry_after = 0.0
+        raise _Transient(
+            f"Hosted transcription hiccup ({response.status_code}): {detail}",
+            retry_after,
+        )
+    raise RuntimeError(
+        f"Hosted transcription failed ({response.status_code}): {detail}"
+    )
+
+
 def _transcribe_groq(
     audio_path: str,
     api_key: str,
@@ -464,6 +528,7 @@ def _transcribe_groq(
 
         granularities = ["segment"] + (["word"] if word_timestamps else [])
 
+        failed: List[int] = []
         for index, chunk in enumerate(chunks):
             offset = index * chunk_seconds
             _report(
@@ -471,31 +536,28 @@ def _transcribe_groq(
                 0.15 + 0.8 * (index / max(len(chunks), 1)),
                 f"Transcribing part {index + 1} of {len(chunks)}…",
             )
-            with open(chunk, "rb") as handle:
-                form: List[tuple] = [
-                    ("model", GROQ_TRANSCRIBE_MODEL),
-                    ("response_format", "verbose_json"),
-                    ("temperature", "0"),
-                ]
-                for level in granularities:
-                    form.append(("timestamp_granularities[]", level))
-                if language:
-                    form.append(("language", language))
 
-                response = requests.post(
-                    GROQ_TRANSCRIBE_URL,
-                    headers={"Authorization": f"Bearer {api_key}"},
-                    files={"file": (os.path.basename(chunk), handle, "audio/ogg")},
-                    data=form,
-                    timeout=600,
-                )
-            if response.status_code != 200:
-                raise RuntimeError(
-                    f"Hosted transcription failed ({response.status_code}): "
-                    f"{response.text[:400]}"
-                )
+            payload = None
+            for attempt in range(1, 4):
+                try:
+                    payload = _post_chunk(chunk, api_key, language, granularities)
+                    break
+                except _Transient as exc:
+                    if attempt == 3:
+                        break
+                    delay = min(exc.retry_after or 2 ** (attempt - 1) * 2.0, 20.0)
+                    _report(
+                        progress_cb,
+                        0.15 + 0.8 * (index / max(len(chunks), 1)),
+                        f"Part {index + 1} hit a hiccup; retrying in {delay:.0f}s…",
+                    )
+                    time.sleep(delay)
 
-            payload = response.json()
+            if payload is None:
+                # One bad part must not throw away the rest of the lesson.
+                failed.append(index + 1)
+                continue
+
             words_all = payload.get("words") or []
             for segment in payload.get("segments", []) or []:
                 text = (segment.get("text") or "").strip()
@@ -513,6 +575,19 @@ def _transcribe_groq(
                     if start <= float(w.get("start", -1)) <= end
                 ] or None
                 results.append(Segment(start + offset, end + offset, text, words))
+
+        if failed and not results:
+            raise RuntimeError(
+                "Hosted transcription failed for every part of this recording. "
+                "Try again in a minute, or switch to a local install."
+            )
+        if failed:
+            _report(
+                progress_cb, 0.95,
+                f"Part(s) {', '.join(map(str, failed))} could not be transcribed; "
+                "continuing without them.",
+            )
+
         return results
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
