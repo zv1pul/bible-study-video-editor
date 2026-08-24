@@ -127,6 +127,9 @@ def is_hosted() -> bool:
 
 HOSTED = is_hosted()
 
+# Above this an upload is likely to exhaust a small hosted container.
+HOSTED_UPLOAD_WARN_MB = 400
+
 ASSET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 
 
@@ -233,14 +236,16 @@ with st.sidebar:
 
     st.divider()
     st.subheader("Transcription")
-    engine_options = ["local", "groq"] if transcriber.LOCAL_AVAILABLE else ["groq"]
-    if not transcriber.LOCAL_AVAILABLE:
+    # A shared container has neither the memory to hold a speech model nor the
+    # processor to spare, so hosted deployments always use the hosted service.
+    if HOSTED or not transcriber.LOCAL_AVAILABLE:
+        engine_options = ["groq"]
         st.caption(
-            "faster-whisper is not installed here, so transcription runs "
-            "through the hosted service."
+            "Transcription runs through Groq here. Running the app on your "
+            "own computer adds an offline option that needs no key."
         )
-    elif HOSTED:
-        engine_options = ["groq", "local"]   # hosted default: don't hog the box
+    else:
+        engine_options = ["local", "groq"]
 
     engine = st.radio(
         "Engine",
@@ -389,10 +394,17 @@ with left:
         if HOSTED:
             st.caption(
                 "Uploads are held in memory while they transfer, and this "
-                "shared server has a limited amount. Lessons up to about "
-                "30 minutes are comfortable here; for a full-length "
+                "shared server has about a gigabyte in total. Lessons up to "
+                "roughly 30 minutes are comfortable here; for a full-length "
                 "recording, use a local install instead."
             )
+            if uploaded is not None and uploaded.size > HOSTED_UPLOAD_WARN_MB * 1024 * 1024:
+                st.warning(
+                    f"That file is {uploaded.size / (1024 * 1024):.0f} MB. On "
+                    "this shared server the app may run out of memory part "
+                    "way through. If it does, run it on your own computer "
+                    "instead — there is no size limit there."
+                )
         else:
             st.caption(
                 "Uploads are held in memory while they transfer. For a "

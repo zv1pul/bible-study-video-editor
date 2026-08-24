@@ -262,15 +262,23 @@ def header_for(point: LessonPoint, points: Sequence[LessonPoint]) -> str:
 # --------------------------------------------------------------------------
 
 
-# Beyond this the per-segment transcript is merged into coarser windows to
-# keep the prompt sane. Gemini takes a very large context; the Llama models
-# used as backup take far less, so a lesson that fits comfortably in one may
-# be refused by the other. Each provider gets a transcript sized for it.
+# What one request may carry, per provider.
+#
+# Gemini's ceiling is its context window, which is enormous. Groq's is its
+# free-tier allowance of 8,000 tokens PER MINUTE, and that applies to a single
+# request: a 45-minute lesson is refused outright with HTTP 413. Measured at
+# roughly 3.4 characters per token, 8,000 tokens is about 27,000 characters
+# for the whole prompt, so the transcript's share is set well below it.
 MAX_PROMPT_CHARS = 300_000
 PROVIDER_PROMPT_CHARS = {
-    "gemini": 300_000,     # ~75k tokens; Gemini's context is far larger again
-    "groq": 260_000,       # ~65k tokens; every Groq model here holds 131k
+    "gemini": 300_000,
+    "groq": 18_000,
 }
+
+# A lesson too long for one request is asked about in sections instead. Groq
+# allows 1,000 requests a day, so several small ones cost far less than the
+# single large one it will not accept.
+CHUNKED_PROVIDERS = {"groq"}
 
 # Merging windows strips timestamps, not words, so it can only shrink a
 # transcript so far. If even the widest window overshoots, the lesson is
@@ -429,6 +437,7 @@ def build_prompt(
     duration: float,
     speaker: str = "",
     silences: Sequence[dict] = (),
+    section: Optional[tuple] = None,
 ) -> str:
     outline_lines = "\n".join(
         f'- id: "{p.id}" | type: {p.type} | header: "{header_for(p, points)}" '
@@ -438,7 +447,19 @@ def build_prompt(
     speaker_line = f"The speaker is {speaker}.\n" if speaker else ""
     safe_transcript, _ = sanitise_transcript(transcript_text)
 
+    section_line = ""
+    if section:
+        number, total, (window_start, window_end) = section
+        section_line = (
+            f"\nThis is SECTION {number} OF {total} of the recording, covering "
+            f"{format_timestamp(window_start)} to {format_timestamp(window_end)}. "
+            "Report only the outline points that are introduced within this "
+            "section. Leave out any point that is not here — another section "
+            "will cover it. Do not guess a time outside this range.\n"
+        )
+
     return f"""{SYSTEM_RULES}
+{section_line}
 
 {speaker_line}The recording is {duration:.0f} seconds long.
 
@@ -1345,6 +1366,98 @@ def _answered_ids(data) -> set:
     }
 
 
+def chunk_segments(segments: Sequence[Segment], max_chars: int) -> List[List[Segment]]:
+    """
+    Split a transcript into pieces that each fit inside one request.
+
+    Pieces overlap by a couple of lines so a point introduced right on a
+    boundary is still visible whole to at least one of them.
+    """
+    chunks: List[List[Segment]] = []
+    current: List[Segment] = []
+    size = 0
+    for segment in segments:
+        line = len(segment["text"]) + 30          # text plus its timestamps
+        if current and size + line > max_chars:
+            chunks.append(current)
+            current = current[-2:]                # carry a little context over
+            size = sum(len(s["text"]) + 30 for s in current)
+        current.append(segment)
+        size += line
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _match_in_chunks(
+    points: Sequence[LessonPoint],
+    segments: Sequence[Segment],
+    provider: str,
+    api_key: str,
+    model: str,
+    duration: float,
+    speaker: str,
+    silences: Sequence[dict],
+    budget: int,
+    notes: List[str],
+    other_keys: Optional[Dict[str, str]],
+    use_cache: bool,
+    report,
+) -> tuple:
+    """
+    Ask about a long lesson one section at a time and merge the answers.
+
+    Each section is shown the whole outline and asked which points appear in
+    it. A point can only be introduced once, so where sections disagree the
+    most confident answer wins.
+    """
+    chunks = chunk_segments(segments, budget)
+    notes.append(
+        f"This lesson is longer than {PROVIDERS.get(provider, {}).get('label', provider)} "
+        f"accepts in one request, so it was examined in {len(chunks)} sections."
+    )
+
+    best: Dict[str, dict] = {}
+    model_used = ""
+    for index, chunk in enumerate(chunks):
+        report(
+            0.3 + 0.5 * (index / max(len(chunks), 1)),
+            f"Examining section {index + 1} of {len(chunks)}…",
+        )
+        window = (chunk[0]["start"], chunk[-1]["end"])
+        prompt = build_prompt(
+            points, format_transcript(chunk), duration, speaker, silences,
+            section=(index + 1, len(chunks), window),
+        )
+        try:
+            raw, model_used, _ = call_with_failover(
+                prompt, provider, api_key, model,
+                on_event=lambda message: notes.append(message),
+                other_keys=other_keys, use_cache=use_cache,
+            )
+            data = extract_json(raw)
+        except (ProviderError, ValueError, json.JSONDecodeError) as exc:
+            notes.append(f"Section {index + 1} could not be read: {exc}")
+            continue
+
+        for item in (data.get("elements") if isinstance(data, dict) else data) or []:
+            if not isinstance(item, dict) or not item.get("id"):
+                continue
+            start = _parse_time(item.get("start_time"))
+            if start is None:
+                continue
+            # Only trust a time that really falls inside the section examined.
+            if not (window[0] - 1 <= start <= window[1] + 1):
+                continue
+            key = str(item["id"]).strip()
+            score = _parse_time(item.get("confidence")) or 0.0
+            if key not in best or score > (best[key].get("_score") or 0.0):
+                item["_score"] = score
+                best[key] = item
+
+    return best, model_used
+
+
 def match_lesson_points(
     points: Sequence[LessonPoint],
     segments: Sequence[Segment],
@@ -1406,6 +1519,25 @@ def match_lesson_points(
             )
         )
         return build_prompt(points, text, duration, speaker, silences), extra
+
+    budget = PROVIDER_PROMPT_CHARS.get(provider, MAX_PROMPT_CHARS)
+    full_transcript = format_transcript(segments)
+    needs_chunking = (
+        provider in CHUNKED_PROVIDERS and len(full_transcript) > budget
+    )
+
+    if needs_chunking:
+        by_id, model_used = _match_in_chunks(
+            points, segments, provider, api_key, model, duration, speaker,
+            silences, budget, notes, other_keys, use_cache, report,
+        )
+        if by_id:
+            return finish(
+                _elements_from_payload(points, by_id, notes, segments, duration),
+                model_used,
+            )
+        notes.append("No section could be read; falling back to offline matching.")
+        return finish(_fallback_elements(points, segments, duration), model_used)
 
     prompt, clean_notes = prompt_for(provider)
     notes.extend(clean_notes)
@@ -1481,6 +1613,20 @@ def match_lesson_points(
             "your outline."
         )
 
+    elements = _elements_from_payload(points, by_id, notes, segments, duration)
+
+    report(1.0, f"Placed {len(elements)} elements.")
+    return finish(_sorted(elements), model_used)
+
+
+def _elements_from_payload(
+    points: Sequence[LessonPoint],
+    by_id: Dict[str, dict],
+    notes: List[str],
+    segments: Sequence[Segment],
+    duration: float,
+) -> List[Element]:
+    """Turn the model's answer into Elements, filling any gaps offline."""
     fallback: Optional[Dict[str, Element]] = None
     elements: List[Element] = []
     missing: List[str] = []
@@ -1505,7 +1651,7 @@ def match_lesson_points(
             Element(
                 type=point.type,
                 header=str(item.get("header") or header_for(point, points)),
-                content=point.text,       # always the user's own wording
+                content=point.text,
                 start_time=float(start),
                 end_time=float(end) if end is not None else 0.0,
                 has_timer=bool(item.get("has_timer", False)),
@@ -1521,11 +1667,8 @@ def match_lesson_points(
         notes.append(
             f"{len(missing)} point(s) were not returned by the AI and were placed "
             "by the offline matcher: " + "; ".join(missing[:5])
-            + f" (the AI answered for: {', '.join(sorted(by_id)) or 'nothing'})"
         )
-
-    report(1.0, f"Placed {len(elements)} elements.")
-    return finish(_sorted(elements), model_used)
+    return _sorted(elements)
 
 
 def _clamp_elements(elements: List[Element], duration: float) -> List[Element]:

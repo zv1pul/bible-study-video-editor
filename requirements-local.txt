@@ -1,0 +1,5 @@
+# Local install: everything in the base set, plus offline transcription.
+# Use this on a laptop, where there is memory to spare and keeping the
+# recording off the internet is worth having.
+-r requirements.txt
+faster-whisper>=1.1.0,<2

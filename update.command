@@ -18,7 +18,7 @@ fi
 echo "Checking for a newer version..."
 git stash push --quiet --include-untracked -- ':!assets' 2>/dev/null || true
 git pull --ff-only
-[ -d ".venv" ] && ./.venv/bin/pip install -q -r requirements.txt
+[ -d ".venv" ] && ./.venv/bin/pip install -q -r requirements-local.txt
 
 echo
 echo "Up to date. Launch the app with run.command as usual."

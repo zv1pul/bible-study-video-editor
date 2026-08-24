@@ -1,92 +1,91 @@
 # Sharing this app
 
-The setup in use: one GitHub repository, deployed two ways.
+One GitHub repository, deployed two ways:
 
-* **Hugging Face Space** — a public link anyone in the fellowship can open,
-  no login. Rebuilds itself every time you push.
+* **Streamlit Community Cloud** — a public link anyone in the fellowship can
+  open, no login, rebuilt automatically every time you push.
 * **Local install** — for whoever processes the full-length lessons. No
   upload, no size limit, and it uses that person's own processor.
 
----
-
-## Keeping both up to date
-
-Everything lives in one repository, with two remotes:
-
-```bash
-git remote -v
-# origin  https://github.com/<you>/bible-study-video-editor.git
-# space   https://huggingface.co/spaces/<you>/bible-study-video-editor
-```
-
-To publish a change:
-
-```bash
-git add -A && git commit -m "what changed"
-git push origin main
-git push space main
-```
-
-The Space rebuilds on its own, usually in a couple of minutes. People with a
-local install double-click **update.command** (Mac) or **update.bat**
-(Windows) — it pulls the new version and refreshes the packages without
-touching their API key or their artwork in `assets/`.
+> **Hugging Face Spaces is no longer an option.** Their free tier now only
+> offers *Static* Spaces, which serve HTML and JavaScript with no Python
+> process behind them — Gradio and Docker require a paid plan, and Streamlit
+> is not offered at all. A Static Space cannot transcribe or render video.
+> If you ever subscribe to HF PRO, the Space configuration that used to sit
+> at the top of `README.md` is preserved at the bottom of this file.
 
 ---
 
-## Setting up the Hugging Face Space
+## Streamlit Community Cloud
 
-1. Create a Space at <https://huggingface.co/new-space>, SDK **Streamlit**,
-   hardware **CPU basic (free)**.
-2. Add it as a remote and push:
+Free, and viewers need no account.
 
-   ```bash
-   git remote add space https://huggingface.co/spaces/<you>/bible-study-video-editor
-   git push space main
+1. Go to <https://share.streamlit.io> and sign in with GitHub.
+2. **Create app** → **Deploy a public app from GitHub**.
+3. Repository `zv1pul/bible-study-video-editor`, branch `main`, main file
+   `app.py`. If the repository is private, grant the extra GitHub permission
+   it asks for — the free plan allows one private app.
+4. Open **Advanced settings → Secrets** and paste:
+
+   ```toml
+   GEMINI_API_KEY = "your-key"
+   GROQ_API_KEY = "your-key"
+   BSVE_HOSTED = "1"
    ```
 
-   The Space configuration is already in the top of `README.md`, and
-   `packages.txt` installs FFmpeg and the fonts.
-3. In **Settings → Variables and secrets**, add `GEMINI_API_KEY` (and
-   `GROQ_API_KEY` if you use hosted transcription). Never commit these — they
-   are excluded by `.gitignore` for exactly this reason.
+5. **Deploy.** The first build takes a few minutes.
 
-### What to expect from the free Space
+`BSVE_HOSTED` is what tells the app it is on a shared server. It then hides
+the option to browse the server's own filesystem, transcribes through Groq
+rather than loading a speech model into the container's memory, and warns
+about uploads large enough to exhaust it.
 
-2 vCPU and 16 GB of RAM, shared by everyone using the link at once.
+### What to expect
 
-* Comfortable for lessons up to about 30 minutes.
-* One person renders at a time; a second person waits.
-* The container sleeps after a period of no use and takes a minute to wake.
-* Everyone's work counts against the one API key you configured. If that
-  becomes a problem, remove the secret and each person pastes their own free
-  key into the sidebar instead.
+The free plan gives roughly **1 GB of memory** for everything — the Python
+process, the upload, and the render.
 
-For a full-length lesson, use a local install instead — uploading several
-gigabytes is slower than reading the file off the desk.
+* Comfortable up to about a 30-minute lesson.
+* One person renders at a time; a second waits.
+* The app sleeps after 12 quiet hours and wakes when somebody visits.
+* Uploads are held in memory as they transfer, so the app warns above 400 MB.
+
+For a full-length lesson, use a local install. Sending several gigabytes to a
+shared container is slower than reading the file off the desk, and more
+likely to run out of memory part way through.
 
 ---
 
-## Setting up a local install
-
-Send the repository link. On the other end:
+## Local install
 
 ```bash
-git clone https://github.com/<you>/bible-study-video-editor.git
+git clone git@github.com:zv1pul/bible-study-video-editor.git
 ```
 
 Then **run.command** (Mac) or **run.bat** (Windows). The first launch builds a
-private Python environment and installs everything, which takes 5–10 minutes
-once. Every launch after that opens in seconds at <http://localhost:8501>.
+private Python environment from `requirements-local.txt`, which takes 5-10
+minutes once. Every launch after that opens in seconds at
+<http://localhost:8501>.
 
-FFmpeg comes bundled with the Python packages, so there is nothing else to
-install.
+The local install adds what the hosted one cannot have: offline transcription
+that needs no key and never sends the recording anywhere, and the "use a file
+already on this computer" option, which has no size limit at all.
 
 > On a Mac, if you see *"cannot be opened because it is from an unidentified
 > developer"*, right-click `run.command` → **Open** → **Open**. Once only.
 
-Each person adds their own API key in the sidebar, or you create
-`.streamlit/secrets.toml` for them (it is never committed).
+---
+
+## Publishing a change
+
+```bash
+./deploy/publish.sh
+```
+
+Streamlit Community Cloud redeploys on its own within a minute or two. People
+with a local install double-click **update.command** or **update.bat**, which
+pulls the new version and refreshes packages without touching their API key or
+their artwork in `assets/`.
 
 ---
 
@@ -102,8 +101,19 @@ Then open <http://localhost:8501>.
 
 ---
 
-## Streamlit Community Cloud
+## If you ever pay for Hugging Face
 
-Possible, but its containers have about 1 GB of RAM — not enough to run the
-speech model locally, and long videos will run out of memory while rendering.
-Hugging Face is the better free host for this app.
+A PRO subscription re-enables Spaces that run compute. Put this back at the
+very top of `README.md`, push to a Space remote, and it will build:
+
+```
+---
+title: Bible Study Video Editor
+emoji: 📖
+colorFrom: indigo
+colorTo: yellow
+sdk: streamlit
+app_file: app.py
+pinned: false
+---
+```

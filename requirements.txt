@@ -1,9 +1,15 @@
-# Bible Study Video Editor - everything here is free and open source.
+# Bible Study Video Editor.
 #
-# Upper bounds are deliberate. This tool is meant to keep working untouched
-# for a long time, and an unpinned dependency that jumps a major version is
-# the most likely way for it to break on a machine nobody has touched in a
-# year. Raise a ceiling only after testing against the new major.
+# This is the BASE install, and it is what a hosted deployment uses. It leaves
+# out faster-whisper, whose speech model needs more memory than a free host
+# has; hosted deployments transcribe through Groq instead, and the app detects
+# that and hides the local option.
+#
+# For a local install use requirements-local.txt, which adds it back.
+#
+# Upper bounds are deliberate. This tool should keep working untouched for a
+# long time, and an unpinned dependency jumping a major version is the most
+# likely way for it to break on a machine nobody has touched in a year.
 streamlit>=1.50,<2          # width= parameter; use_container_width is retired
 moviepy>=2.1.2,<3           # v2 draws text with Pillow: no ImageMagick needed
 imageio-ffmpeg>=0.5.1,<1    # ships an FFmpeg binary for Mac/Windows/Linux
@@ -12,4 +18,3 @@ numpy>=1.26,<3
 pandas>=2.0,<4
 requests>=2.32,<3
 proglog>=0.1.10,<1
-faster-whisper>=1.1.0,<2    # local transcription; drop this line for API-only use

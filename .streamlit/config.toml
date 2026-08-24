@@ -1,10 +1,11 @@
 [server]
-maxUploadSize = 4096          # megabytes. Note: Streamlit buffers an upload
-                              # in memory, so a file this large needs a machine
-                              # with the RAM to match. For anything over ~1 GB
-                              # use "Use a file already on this computer",
-                              # which reads from disk and has no size limit.
-enableXsrfProtection = true
+maxUploadSize = 1024          # megabytes. Streamlit buffers an upload in
+                              # memory, so this must stay inside the host's
+                              # RAM. A free hosted app has about 1 GB in
+                              # total; locally, use "Use a file already on
+                              # this computer" for anything large — it reads
+                              # from disk with no limit at all.
+
 
 [browser]
 gatherUsageStats = false

@@ -1,14 +1,3 @@
----
-title: Bible Study Video Editor
-emoji: 📖
-colorFrom: indigo
-colorTo: yellow
-sdk: streamlit
-app_file: app.py
-pinned: false
-short_description: Turn a lesson recording into a finished teaching video
----
-
 # 📖 Bible Study Video Editor
 
 Turn a raw lesson recording into a finished teaching video. Upload the video,
@@ -413,7 +402,10 @@ You need one key, for step 2. Either works:
 * **Groq** — <https://console.groq.com/keys> · also free, counted entirely
   separately from Google's, and the same key additionally unlocks hosted
   transcription (measured at 1.2 seconds for a two-minute lesson, against 5
-  seconds locally).
+  seconds locally). Its allowances are shaped very differently: 1,000 requests
+  a day, but only 8,000 tokens per minute, which is less than a 45-minute
+  lesson. The app handles that by asking about long lessons a section at a
+  time rather than all at once.
 
 Set **both**. They are independent allowances from independent companies, so
 when one is spent — or having an outage — the other carries on.
@@ -498,12 +490,12 @@ ever see *"FFmpeg was not found"*:
 
 Full instructions are in [`deploy/DEPLOYING.md`](deploy/DEPLOYING.md). In short:
 
-* **Hugging Face Space** — a public link anyone can open, no login. Rebuilds
-  automatically whenever you push. Best for lessons up to about 30 minutes;
-  one person renders at a time.
+* **Streamlit Community Cloud** — a public link anyone can open, no login.
+  Rebuilds automatically whenever you push. About 1 GB of memory, so best for
+  lessons up to roughly 30 minutes, one person at a time.
 * **Local install** — clone the repo, double-click `run.command` (Mac) or
-  `run.bat` (Windows). No upload, no size limit, uses that person's own
-  processor. This is the one for full-length lessons.
+  `run.bat` (Windows). No upload, no size limit, offline transcription, and it
+  uses that person's own processor. This is the one for full-length lessons.
 * **Updating** — double-click `update.command` / `update.bat`. It pulls the
   latest version and refreshes packages without touching your API key or your
   artwork in `assets/`.

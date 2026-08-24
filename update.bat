@@ -12,7 +12,7 @@ if not exist ".git" (
 
 echo Checking for a newer version...
 git pull --ff-only
-if exist ".venv" .venv\Scripts\pip.exe install -q -r requirements.txt
+if exist ".venv" .venv\Scripts\pip.exe install -q -r requirements-local.txt
 
 echo.
 echo Up to date. Launch the app with run.bat as usual.

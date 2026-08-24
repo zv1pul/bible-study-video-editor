@@ -11,7 +11,7 @@ if [ ! -d ".venv" ]; then
   echo "First run: creating the virtual environment (a few minutes)…"
   $PY -m venv .venv
   ./.venv/bin/python -m pip install --upgrade pip
-  ./.venv/bin/pip install -r requirements.txt
+  ./.venv/bin/pip install -r requirements-local.txt
 fi
 
 echo "Starting the Bible Study Video Editor…"

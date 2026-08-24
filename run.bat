@@ -15,7 +15,7 @@ if not exist ".venv" (
   echo First run: creating the virtual environment ^(a few minutes^)...
   python -m venv .venv
   .venv\Scripts\python.exe -m pip install --upgrade pip
-  .venv\Scripts\pip.exe install -r requirements.txt
+  .venv\Scripts\pip.exe install -r requirements-local.txt
 )
 
 echo Starting the Bible Study Video Editor...
