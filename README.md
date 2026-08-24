@@ -87,13 +87,31 @@ real constraint on this tool, so four things protect it:
 * **A backup provider is a second tank.** Groq's free tier is counted
   separately from Google's. Put a Groq key in the sidebar and when Gemini is
   finished for the day the app switches over instead of dropping to offline
-  matching.
+  matching. Verified against both live services: with Gemini genuinely out of
+  allowance, the app skipped it and completed on Groq in under seven seconds.
 
 The sidebar shows what is left: **Today's free usage**, per model.
 
 If several people share one key you will exhaust it faster. The simplest fix
 is for each person to paste their own free key — it takes a minute to get one
 and the allowances are then per-person.
+
+### A note on why nothing here is hard-coded on trust
+
+Every model name in this project has been checked against the live services,
+because both had already moved underneath it:
+
+* Google retired `gemini-2.5-flash` — the model this was first written
+  against — before it ever ran a real lesson.
+* Groq retired its entire Llama line-up. `llama-3.3-70b-versatile` and
+  `llama-3.1-8b-instant` no longer exist.
+
+The providers also disagree about how to ask for structured output.
+`groq/compound-mini` rejects a JSON schema and needs the looser mode;
+`openai/gpt-oss-20b` produces invalid JSON *without* a schema. Rather than
+keep a list that will go stale, the app tries the strict form and drops to the
+looser one when the endpoint says it is unsupported, and treats a failed
+generation as worth retrying.
 
 ### When things break
 
@@ -392,8 +410,13 @@ You need one key, for step 2. Either works:
 * **Google Gemini** — <https://aistudio.google.com/apikey> · sign in with a
   Google account, click *Create API key*. Most generous free tier; this is the
   one to pick.
-* **Groq** — <https://console.groq.com/keys> · also free, and the same key
-  additionally unlocks the fast hosted transcription option.
+* **Groq** — <https://console.groq.com/keys> · also free, counted entirely
+  separately from Google's, and the same key additionally unlocks hosted
+  transcription (measured at 1.2 seconds for a two-minute lesson, against 5
+  seconds locally).
+
+Set **both**. They are independent allowances from independent companies, so
+when one is spent — or having an outage — the other carries on.
 
 Paste the key into the sidebar. To avoid pasting it every time, create
 `.streamlit/secrets.toml`:

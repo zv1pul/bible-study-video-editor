@@ -59,10 +59,19 @@ PROVIDERS = {
         "list_url": "https://generativelanguage.googleapis.com/v1beta/models",
     },
     "groq": {
-        "label": "Groq / Llama (free tier)",
+        # Verified against the live account: Groq retired the Llama models
+        # this originally used, which is precisely why nothing here may be
+        # taken on trust and why discover_models() exists.
+        "label": "Groq (free tier)",
+        # Tested against the live account on the real prompt:
+        #   gpt-oss-120b   reliable
+        #   gpt-oss-20b    reliable once the reply is schema-constrained
+        #   compound-mini  works, but routes to gpt-oss-120b and shares its limit
+        #   qwen3.6-27b    fails JSON validation on this prompt; left out
         "chain": [
-            "llama-3.3-70b-versatile",
-            "llama-3.1-8b-instant",
+            "openai/gpt-oss-120b",
+            "openai/gpt-oss-20b",
+            "groq/compound-mini",
         ],
         "key_url": "https://console.groq.com/keys",
         "list_url": "https://api.groq.com/openai/v1/models",
@@ -260,7 +269,7 @@ def header_for(point: LessonPoint, points: Sequence[LessonPoint]) -> str:
 MAX_PROMPT_CHARS = 300_000
 PROVIDER_PROMPT_CHARS = {
     "gemini": 300_000,     # ~75k tokens; Gemini's context is far larger again
-    "groq": 200_000,       # ~50k tokens, comfortably inside a 128k context
+    "groq": 260_000,       # ~65k tokens; every Groq model here holds 131k
 }
 
 # Merging windows strips timestamps, not words, so it can only shrink a
@@ -537,6 +546,28 @@ RESPONSE_SCHEMA = {
     "required": ["elements"],
 }
 
+def _strict_schema() -> dict:
+    """
+    RESPONSE_SCHEMA in the stricter form OpenAI-compatible endpoints want:
+    every property required, nothing extra allowed.
+    """
+    schema = json.loads(json.dumps(RESPONSE_SCHEMA))
+
+    def tighten(node):
+        if isinstance(node, dict):
+            if node.get("type") == "object":
+                node["additionalProperties"] = False
+                node["required"] = list((node.get("properties") or {}).keys())
+            for value in node.values():
+                tighten(value)
+        elif isinstance(node, list):
+            for value in node:
+                tighten(value)
+
+    tighten(schema)
+    return schema
+
+
 # Worth another go: overloaded, rate limited, or a server-side wobble.
 RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504}
 
@@ -689,38 +720,75 @@ def _call_gemini(prompt: str, api_key: str, model: str, timeout: int = 240) -> s
 
 
 def _call_groq(prompt: str, api_key: str, model: str, timeout: int = 240) -> str:
-    response = _post(
-        "https://api.groq.com/openai/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
+    """
+    Ask a Groq model, adapting to what that model actually supports.
+
+    Groq's line-up is mixed. Some models accept a JSON schema and will only
+    emit output matching it; others reject `json_schema` outright and need the
+    looser `json_object` mode. Rather than maintain a list that will go stale,
+    the strict form is tried first and the looser one used if the endpoint
+    says it is not supported.
+    """
+    formats = [
+        {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "elements", "strict": True, "schema": _strict_schema(),
+            },
         },
-        payload={
-            "model": model,
-            "temperature": 0.1,
-            "response_format": {"type": "json_object"},
-            "messages": [
-                {"role": "system", "content": SYSTEM_RULES},
-                {"role": "user", "content": prompt},
-            ],
-        },
-        timeout=timeout,
-    )
-    if response.status_code != 200:
+        {"type": "json_object"},
+    ]
+
+    last: Optional[ProviderError] = None
+    for index, response_format in enumerate(formats):
+        response = _post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            payload={
+                "model": model,
+                "temperature": 0.1,
+                "response_format": response_format,
+                "messages": [
+                    {"role": "system", "content": SYSTEM_RULES},
+                    {"role": "user", "content": prompt},
+                ],
+            },
+            timeout=timeout,
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            try:
+                return data["choices"][0]["message"]["content"]
+            except (KeyError, IndexError) as exc:
+                raise ProviderError(
+                    f"Unexpected Groq reply: {json.dumps(data)[:200]}"
+                ) from exc
+
         try:
-            message = response.json().get("error", {}).get("message", response.text)
+            message = str(response.json().get("error", {}).get("message", response.text))
         except ValueError:
             message = response.text
+        lowered = message.lower()
+
+        # This model cannot take a schema — drop to the looser mode and retry.
+        if "does not support response format" in lowered and index == 0:
+            continue
+
+        # The model produced JSON that failed validation. That is a roll of the
+        # dice rather than a permanent condition, so it is worth another go.
+        stochastic = "failed to validate json" in lowered or "failed to generate json" in lowered
+
         raise ProviderError(
-            f"{model}: {str(message)[:200]}",
+            f"{model}: {message[:200]}",
             response.status_code,
-            response.status_code in RETRYABLE_STATUS,
+            response.status_code in RETRYABLE_STATUS or stochastic,
         )
-    data = response.json()
-    try:
-        return data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError) as exc:
-        raise ProviderError(f"Unexpected Groq reply: {json.dumps(data)[:200]}") from exc
+
+    raise ProviderError(f"{model}: {last or 'no usable response format'}", 400, False)
 
 
 def _call_once(prompt: str, provider: str, api_key: str, model: str) -> str:
@@ -749,14 +817,24 @@ def _cache_path(name: str) -> str:
     return os.path.join(CACHE_DIR, name)
 
 
-def prompt_key(prompt: str, provider: str) -> str:
-    digest = hashlib.sha256(f"{provider}\n{prompt}".encode("utf-8")).hexdigest()
+def prompt_key(prompt: str, provider: str, model: str = "auto") -> str:
+    """
+    The model is part of the key, and that is not incidental.
+
+    The second-opinion check deliberately asks a DIFFERENT model the same
+    question. Keying on the prompt alone would serve it the first model's
+    answer straight back from cache, and two identical answers always agree —
+    the check would silently become worthless.
+    """
+    digest = hashlib.sha256(
+        f"{provider}\n{model}\n{prompt}".encode("utf-8")
+    ).hexdigest()
     return f"answer_{digest[:32]}.json"
 
 
-def cache_get(prompt: str, provider: str) -> Optional[tuple]:
+def cache_get(prompt: str, provider: str, model: str = "auto") -> Optional[tuple]:
     """A previous answer to exactly this question, if we still have it."""
-    path = _cache_path(prompt_key(prompt, provider))
+    path = _cache_path(prompt_key(prompt, provider, model))
     try:
         if not os.path.exists(path):
             return None
@@ -770,9 +848,10 @@ def cache_get(prompt: str, provider: str) -> Optional[tuple]:
         return None
 
 
-def cache_put(prompt: str, provider: str, raw: str, model: str) -> None:
+def cache_put(prompt: str, provider: str, raw: str, model: str,
+              requested: str = "auto") -> None:
     try:
-        with open(_cache_path(prompt_key(prompt, provider)), "w",
+        with open(_cache_path(prompt_key(prompt, provider, requested)), "w",
                   encoding="utf-8") as handle:
             json.dump({"raw": raw, "model": model}, handle)
     except Exception:
@@ -873,7 +952,13 @@ def discover_models(provider: str, api_key: str) -> List[str]:
                 return []
             for model in response.json().get("data", []):
                 name = str(model.get("id", ""))
-                if "whisper" in name or "tts" in name or "guard" in name:
+                # Speech, safety and speech-synthesis models cannot do this
+                # job; allam-2-7b was tested and cannot produce the JSON.
+                if any(word in name for word in
+                       ("whisper", "tts", "guard", "orpheus", "allam",
+                        "prompt-guard")):
+                    continue
+                if not model.get("active", True):
                     continue
                 found.append(name)
     except Exception:
@@ -924,7 +1009,7 @@ def call_with_failover(
     # Asking the same question twice is the easiest way to waste an allowance
     # of twenty requests a day.
     if use_cache and not _discovered_round:
-        cached = cache_get(prompt, provider)
+        cached = cache_get(prompt, provider, model)
         if cached and cached[0].strip():
             note(f"Reused the saved answer from {cached[1] or 'earlier'} — no request needed.")
             return cached[0], cached[1], log
@@ -936,7 +1021,7 @@ def call_with_failover(
                 text = _call_once(prompt, provider, api_key, model_name)
                 record_call(provider, model_name)
                 if use_cache:
-                    cache_put(prompt, provider, text, model_name)
+                    cache_put(prompt, provider, text, model_name, model)
                 if attempt > 1 or model_name != chain[0]:
                     note(f"Answered by {model_name} (attempt {attempt}).")
                 return text, model_name, log
