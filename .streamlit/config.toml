@@ -1,0 +1,14 @@
+[server]
+maxUploadSize = 4096          # megabytes. Note: Streamlit buffers an upload
+                              # in memory, so a file this large needs a machine
+                              # with the RAM to match. For anything over ~1 GB
+                              # use "Use a file already on this computer",
+                              # which reads from disk and has no size limit.
+enableXsrfProtection = true
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "dark"
+primaryColor = "#FFCA5C"

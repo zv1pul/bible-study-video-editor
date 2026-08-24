@@ -1,0 +1,14 @@
+services:
+  bible-study-editor:
+    build: .
+    ports:
+      - "8501:8501"
+    environment:
+      # Optional: pre-fill the keys so nobody has to paste them in the browser.
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+    volumes:
+      # Keeps the downloaded Whisper model between restarts.
+      - whisper-models:/root/.cache/huggingface
+volumes:
+  whisper-models:

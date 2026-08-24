@@ -1,0 +1,12 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+.env
+.streamlit/secrets.toml
+*.mp4
+*.mov
+*.wav
+*.ogg
+!sample/*.mp4
+.DS_Store

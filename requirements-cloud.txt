@@ -1,0 +1,11 @@
+# Slimmer install for free web hosts with little RAM (e.g. Streamlit Community
+# Cloud). Leaves out faster-whisper, so transcription runs through the free
+# hosted Groq Whisper API instead of on the server.
+streamlit>=1.50
+moviepy>=2.1.2
+imageio-ffmpeg>=0.5.1
+Pillow>=10.1
+numpy>=1.26
+pandas>=2.0
+requests>=2.32
+proglog>=0.1.10
