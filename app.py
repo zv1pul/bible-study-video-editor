@@ -531,40 +531,84 @@ with left:
 with right:
     st.subheader("3 · The lesson outline")
     st.caption(
-        "One point per line. Blank lines are ignored. Use ` | ` inside a line "
-        "to put several items on a single card as a list."
+        "Enter the divisions first. A section then appears under each one for "
+        "the principles and applications that belong to it."
     )
+
     takeaway = st.text_area(
         "Takeaway",
         height=80,
-        placeholder="True worship begins with God's initiative, not ours.",
+        placeholder="God seeks sincere relationship, not hollow religion.",
+        help="The one thing the lesson is for. Usually stated near the start.",
     )
-    divisions = st.text_area(
-        "Divisions",
+
+    divisions_raw = st.text_area(
+        "Divisions — one per line",
         height=110,
-        placeholder="I. Man-initiated Religion\nII. God-initiated Worship\nIII. The Response of Faith",
+        placeholder="I. Man-initiated Religion (Zechariah 7)\n"
+                    "II. God-Initiated Relationship (Zechariah 8)",
+        help="Type each division on its own line. Sections for its principles "
+             "and applications appear below as you add them.",
     )
-    principles = st.text_area(
-        "Principles",
-        height=110,
-        placeholder="God defines how He is to be approached.\nObedience precedes blessing.",
-    )
-    applications = st.text_area(
-        "Applications",
-        height=110,
-        placeholder="Examine what you bring to worship this week.\nConfess where you have substituted effort for faith.",
-    )
+    division_titles = [line.strip() for line in divisions_raw.splitlines() if line.strip()]
+
+    divisions: list = []
+    if not division_titles:
+        st.info(
+            "Add a division above and its own principles and applications "
+            "will appear here."
+        )
+    for index, title in enumerate(division_titles, start=1):
+        with st.container(border=True):
+            st.markdown(f"**{title}**")
+            principles = st.text_area(
+                "Principles",
+                height=90,
+                key=f"principles_{index}",
+                placeholder="Religion is deceptively tempting, but neither "
+                            "saves nor satisfies.",
+                help=f"The principles taught under {title}. One per line.",
+            )
+            applications = st.text_area(
+                "Applications",
+                height=90,
+                key=f"applications_{index}",
+                placeholder="Where in your life have you substituted activity "
+                            "for intimacy with God?",
+                help=f"The application questions asked under {title}. "
+                     "One per line.",
+            )
+        divisions.append({
+            "title": title,
+            "principles": principles,
+            "applications": applications,
+        })
+
+    _counts = {
+        "takeaway": len([t for t in takeaway.splitlines() if t.strip()]),
+        "divisions": len(division_titles),
+        "principles": sum(
+            len([x for x in d["principles"].splitlines() if x.strip()])
+            for d in divisions
+        ),
+        "applications": sum(
+            len([x for x in d["applications"].splitlines() if x.strip()])
+            for d in divisions
+        ),
+    }
+    if any(_counts.values()):
+        st.caption(
+            "  ·  ".join(
+                f"{count} {name}" for name, count in _counts.items() if count
+            )
+            + f"  ·  {sum(_counts.values())} cards in total"
+        )
 
 logo_path = save_upload(logo_file, "logo") or asset_default("logo")
 intro_path = save_upload(intro_file, "intro") or asset_default("intro")
 outro_path = save_upload(outro_file, "outro") or asset_default("outro")
 
-outline = {
-    "Takeaway": takeaway,
-    "Division": divisions,
-    "Principle": principles,
-    "Application": applications,
-}
+outline = {"takeaway": takeaway, "divisions": divisions}
 points = matcher.build_lesson_points(outline)
 
 # --------------------------------------------------------------------------

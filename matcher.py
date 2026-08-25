@@ -132,6 +132,7 @@ class LessonPoint:
     id: str
     category: str
     text: str
+    division: str = ""      # the division this sits under, if any
 
     @property
     def type(self) -> str:
@@ -229,16 +230,88 @@ def lower_third_element(name: str, title: str) -> Element:
     )
 
 
-def build_lesson_points(outline: Dict[str, str]) -> List[LessonPoint]:
+def build_lesson_points(outline) -> List[LessonPoint]:
     """
-    Turn the four free-text boxes from the UI into a flat, numbered list.
-    One line of text = one lesson point. Blank lines are ignored.
+    Flatten the lesson outline into an ordered list of points.
+
+    Accepts the structured form, which mirrors how a lesson is actually
+    built — a takeaway, then divisions, each with its own principles and
+    applications:
+
+        {"takeaway": "...",
+         "divisions": [
+             {"title": "I. Man-initiated Religion",
+              "principles": ["..."],
+              "applications": ["..."]},
+         ]}
+
+    The flat form is still accepted so existing scripts keep working:
+
+        {"Takeaway": "...", "Division": "I. ...\nII. ...", ...}
+
+    Points come out in teaching order — takeaway, then each division followed
+    by everything belonging to it — which is also the order they are expected
+    to appear in the recording.
     """
+    if not isinstance(outline, dict):
+        return []
+
+    if "divisions" in outline or "takeaway" in outline:
+        return _points_from_structured(outline)
+    return _points_from_flat(outline)
+
+
+def _lines(value) -> List[str]:
+    if isinstance(value, (list, tuple)):
+        items = value
+    else:
+        items = str(value or "").splitlines()
+    return [str(item).strip() for item in items if str(item).strip()]
+
+
+def _points_from_structured(outline: dict) -> List[LessonPoint]:
+    points: List[LessonPoint] = []
+    counts: Dict[str, int] = {}
+
+    def add(category: str, text: str, division: str = "") -> None:
+        counts[category] = counts.get(category, 0) + 1
+        points.append(
+            LessonPoint(
+                id=f"{category.lower()}_{counts[category]}",
+                category=category,
+                text=text,
+                division=division,
+            )
+        )
+
+    for text in _lines(outline.get("takeaway")):
+        add("Takeaway", text)
+
+    for division in outline.get("divisions") or []:
+        if not isinstance(division, dict):
+            division = {"title": str(division)}
+        title = str(division.get("title", "")).strip()
+        if not title:
+            continue
+        add("Division", title)
+        for text in _lines(division.get("principles")):
+            add("Principle", text, title)
+        for text in _lines(division.get("applications")):
+            add("Application", text, title)
+
+    # Anything not filed under a division still belongs in the lesson.
+    for text in _lines(outline.get("principles")):
+        add("Principle", text)
+    for text in _lines(outline.get("applications")):
+        add("Application", text)
+
+    return points
+
+
+def _points_from_flat(outline: Dict[str, str]) -> List[LessonPoint]:
     points: List[LessonPoint] = []
     for category in CATEGORIES:
-        raw = outline.get(category, "") or ""
-        lines = [line.strip() for line in raw.splitlines() if line.strip()]
-        for index, line in enumerate(lines, start=1):
+        for index, line in enumerate(_lines(outline.get(category)), start=1):
             points.append(
                 LessonPoint(
                     id=f"{category.lower()}_{index}",
@@ -442,6 +515,7 @@ def build_prompt(
     outline_lines = "\n".join(
         f'- id: "{p.id}" | type: {p.type} | header: "{header_for(p, points)}" '
         f'| content: "{p.text}"'
+        + (f' | belongs under: "{p.division}"' if p.division else "")
         for p in points
     )
     speaker_line = f"The speaker is {speaker}.\n" if speaker else ""
@@ -510,8 +584,10 @@ RULES
    [01:23.400 -> ...] is 83.4.
 3. Both times must fall between 0 and {duration:.0f}, and end_time must be
    greater than start_time.
-4. Divisions normally appear in the written order. Principles and
-   applications usually follow the division they belong to.
+4. Divisions normally appear in the written order, and the outline above is
+   in teaching order. Where an item says "belongs under", it is taught after
+   that division is introduced and before the next division begins — use that
+   to narrow your search.
 5. If an item is never discussed, still return it with confidence 0.
 6. confidence is your honest probability from 0 to 1 that this is the right
    moment. Low confidence is far more useful to us than a confident guess.

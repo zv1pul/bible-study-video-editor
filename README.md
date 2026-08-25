@@ -444,20 +444,32 @@ ever see *"FFmpeg was not found"*:
    *Copy … as Pathname*.)
 2. **Speaker** — name and title. These appear at 00:05 for five seconds.
    Leave blank to skip the lower third.
-3. **Outline** — one point per line in each box:
+3. **Outline** — enter the divisions first, and a section appears under each
+   one for the principles and applications that belong to it:
 
    ```
-   Takeaway:     True worship begins with God's initiative, not ours.
+   Takeaway     God seeks sincere relationship, not hollow religion.
 
-   Divisions:    I. Man-initiated Religion
-                 II. God-initiated Worship
-                 III. The Response of Faith
+   Divisions    I. Man-initiated Religion (Zechariah 7)
+                II. God-Initiated Relationship (Zechariah 8)
 
-   Principles:   God defines how He is to be approached.
-                 Obedience precedes blessing.
+     under I.   Principles    Religion is deceptively tempting, but neither
+                              saves nor satisfies.
+                Applications  Where in your life have you substituted
+                              activity for intimacy with God?
 
-   Applications: Examine what you bring to worship this week.
+     under II.  Principles    Through Christ, restored relationship with God
+                              produces joyful obedience.
+                Applications  Where have you seen grace turn duty into
+                              delight in your obedience?
    ```
+
+   This mirrors how the lesson is actually built, and it tells the app which
+   division each principle sits under — so it only looks for that principle
+   in the stretch of the recording after its division is introduced.
+
+   One point per line within each box. Use ` | ` inside a line to put several
+   items on a single card as a list.
 
    Write them the way you'd say them, not in note form — the AI matches on
    meaning, and a full sentence gives it more to work with.
