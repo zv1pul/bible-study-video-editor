@@ -52,7 +52,12 @@ CONTROL_TIMEOUT = 6           # never keep somebody waiting on this
 CONTROL_CACHE_MINUTES = 60
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_STATE_DIR = os.path.join(_HERE, ".state")
+
+# Inside a packaged app the bundle is read-only, so anything we save goes to
+# the folder the launcher hands us. Running from a checkout, it sits here.
+_STATE_DIR = os.path.join(
+    os.environ.get("BSVE_HOME") or _HERE, ".state"
+)
 
 
 # --------------------------------------------------------------------------

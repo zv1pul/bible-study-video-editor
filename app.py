@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import time
 import traceback
@@ -1186,6 +1187,12 @@ if st.session_state.verdicts:
 MAX_INMEMORY_DOWNLOAD_MB = 400
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+# A packaged app cannot write inside its own bundle, so finished videos go
+# somewhere obvious instead: the user's Movies folder.
+PACKAGED_OUTPUT_DIR = os.path.join(
+    os.path.expanduser("~"), "Movies", "Bible Study Video Editor"
+)
+IS_PACKAGED = bool(os.environ.get("BSVE_HOME"))
 STATIC_MAX_AGE_HOURS = 6
 
 
@@ -1236,9 +1243,26 @@ if st.session_state.output_path and os.path.exists(st.session_state.output_path)
     if size_mb <= 60:
         st.video(path)
 
-    # Served straight from disk, so the size of the lesson does not matter.
     stem = os.path.splitext(os.path.basename(st.session_state.video_path or "lesson"))[0]
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem)[:60] or "lesson"
+
+    if IS_PACKAGED:
+        # The finished video goes straight to Movies, where people look for
+        # videos, and the app offers to open the folder. No download needed.
+        os.makedirs(PACKAGED_OUTPUT_DIR, exist_ok=True)
+        saved = os.path.join(PACKAGED_OUTPUT_DIR, f"{safe} - captioned.mp4")
+        try:
+            if not os.path.exists(saved) or os.path.getmtime(saved) < os.path.getmtime(path):
+                shutil.copy2(path, saved)
+        except OSError:
+            saved = path
+        st.success(f"Saved to your Movies folder as **{os.path.basename(saved)}**")
+        if st.button("📂  Show it in Finder", width="stretch"):
+            subprocess.run(["open", "-R", saved], check=False)
+        st.code(saved, language=None)
+        st.stop()
+
+    # Served straight from disk, so the size of the lesson does not matter.
     url = publish_for_download(path, f"{safe}-captioned.mp4")
 
     if url:
@@ -1271,7 +1295,12 @@ if st.session_state.output_path and os.path.exists(st.session_state.output_path)
         )
     else:
         source = st.session_state.video_path or ""
-        folder = os.path.dirname(os.path.abspath(source)) if source else ""
+        folder = (
+            PACKAGED_OUTPUT_DIR if IS_PACKAGED
+            else (os.path.dirname(os.path.abspath(source)) if source else "")
+        )
+        if IS_PACKAGED:
+            os.makedirs(folder, exist_ok=True)
         final = ""
         if folder and os.path.isdir(folder) and os.access(folder, os.W_OK):
             stem2 = os.path.splitext(os.path.basename(source))[0]

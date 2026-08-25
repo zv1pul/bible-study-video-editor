@@ -1,0 +1,46 @@
+#!/bin/bash
+# Starts the app and opens it in the browser. Everything it needs is inside
+# this bundle — there is no separate Python or FFmpeg to install.
+set -e
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RES="$HERE/../Resources"
+PY="$RES/python/bin/python3"
+APPDIR="$RES/app"
+
+# Somewhere writable for settings, saved videos and the update cache. Inside
+# the bundle is not writable once the app is in /Applications.
+SUPPORT="$HOME/Library/Application Support/BibleStudyVideoEditor"
+mkdir -p "$SUPPORT"
+export BSVE_HOME="$SUPPORT"
+export STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+export STREAMLIT_SERVER_HEADLESS=true
+export STREAMLIT_GLOBAL_DEVELOPMENT_MODE=false
+
+# Find a free port so two copies never collide.
+PORT=$("$PY" - <<'PYEOF'
+import socket
+s = socket.socket(); s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1]); s.close()
+PYEOF
+)
+
+cd "$APPDIR"
+"$PY" -m streamlit run app.py \
+  --server.port "$PORT" \
+  --server.address 127.0.0.1 \
+  --server.headless true \
+  --browser.gatherUsageStats false > "$SUPPORT/last-run.log" 2>&1 &
+STREAMLIT_PID=$!
+
+# Wait for it to answer, then open the browser.
+for i in $(seq 1 60); do
+  if curl -s -o /dev/null "http://127.0.0.1:$PORT/_stcore/health"; then
+    open "http://127.0.0.1:$PORT"
+    break
+  fi
+  sleep 0.5
+done
+
+# Quit when the browser tab is closed? No — people close tabs by accident.
+# The app keeps running until it is quit from the Dock.
+wait $STREAMLIT_PID

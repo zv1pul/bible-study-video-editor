@@ -1,0 +1,31 @@
+Bible Study Video Editor — how to install
+=========================================
+
+1.  Drag "Bible Study Video Editor" into your Applications folder.
+
+2.  THE FIRST TIME ONLY, open it like this:
+
+        RIGHT-CLICK the app  ->  choose "Open"  ->  click "Open" again
+
+    Do not double-click it the first time. macOS blocks apps that were not
+    bought from the App Store until you open one this way once. You will see
+    a warning saying the developer cannot be verified — that is expected,
+    and clicking "Open" is what tells macOS you trust it.
+
+    After that first time, double-clicking works normally, forever.
+
+3.  The app opens in your web browser. That is normal — it runs entirely on
+    your own computer and nothing is uploaded anywhere.
+
+    The very first time you analyse a lesson it downloads a speech model,
+    which takes a minute. After that it is quick.
+
+Finished videos are saved to:
+    Movies > Bible Study Video Editor
+
+Nothing else needs installing. Python, FFmpeg and the fonts are all inside
+the app.
+
+If you see "the app is damaged and can't be opened", it was unzipped by
+something that stripped its permissions. Download it again and unzip it by
+double-clicking the .zip in Finder.

@@ -346,6 +346,34 @@ same rather than having a tiny or gigantic caption.
 
 ## Install and run
 
+### The Mac app (nothing to install)
+
+Download **Bible Study Video Editor.zip**, unzip it, and drag the app to
+Applications. Everything it needs is inside — Python, FFmpeg, the fonts, the
+artwork. There is no separate install of anything.
+
+**The first time, right-click the app and choose Open**, then click Open
+again. macOS blocks apps that did not come from the App Store until you do
+this once; after that, double-clicking works normally. The warning that "the
+developer cannot be verified" is expected, and is what right-clicking gets
+past.
+
+> Removing that warning entirely requires an Apple Developer account at $99 a
+> year, which buys a signing certificate and notarisation. Worth it if the
+> app goes to many people; the one-time right-click is fine for a handful.
+
+Finished videos are saved to **Movies → Bible Study Video Editor**.
+
+The app is built for Apple Silicon. To build it yourself, or to build for an
+Intel Mac:
+
+```bash
+./packaging/build_macos.sh
+```
+
+### From the repository (Mac, Windows or Linux)
+
+
 You need **Python 3.10 – 3.12** (3.13 also works). Nothing else — FFmpeg comes
 bundled with the Python packages.
 

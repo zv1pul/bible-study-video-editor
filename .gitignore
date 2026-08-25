@@ -13,3 +13,5 @@ __pycache__/
 .cache/
 static/
 .state/
+build/
+dist/

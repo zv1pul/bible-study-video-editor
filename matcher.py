@@ -904,7 +904,11 @@ def _call_once(prompt: str, provider: str, api_key: str, model: str) -> str:
 # question genuinely expensive, so identical questions are answered from disk
 # and never sent twice.
 
-CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache")
+CACHE_DIR = os.path.join(
+    os.environ.get("BSVE_HOME")
+    or os.path.dirname(os.path.abspath(__file__)),
+    ".cache",
+)
 CACHE_MAX_AGE_DAYS = 30
 DAILY_FREE_REQUESTS = 20
 

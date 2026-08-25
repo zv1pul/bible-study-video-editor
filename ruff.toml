@@ -1,0 +1,3 @@
+# The build folder contains a bundled Python runtime and every dependency;
+# linting those is meaningless and drowns out real findings.
+extend-exclude = ["build", "dist", ".venv"]
