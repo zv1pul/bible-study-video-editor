@@ -1,9 +1,9 @@
 {
-  "latest_version": "1.1.0",
+  "latest_version": "1.0.0",
   "minimum_version": "0.0.0",
-  "message": "Reminder: set Drive sharing to 'Anyone with the link' before pasting.",
+  "message": "",
   "message_kind": "info",
-  "release_notes": "Faster rendering and clearer timings.",
+  "release_notes": "",
   "telemetry_url": "",
   "settings": {}
 }

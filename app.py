@@ -22,6 +22,7 @@ import traceback
 import pandas as pd
 import streamlit as st
 
+import control
 import editor
 import matcher
 import transcriber
@@ -389,6 +390,31 @@ with st.sidebar:
     )
     st.caption(f"Overlay font: {editor.font_report()}")
 
+    st.divider()
+    st.subheader("About this copy")
+    st.caption(f"Version {control.VERSION}")
+    if st.button("Check for updates", width="stretch"):
+        control.fetch_control(force=True)
+        st.rerun()
+
+    _reporting = st.toggle(
+        "Send anonymous usage statistics",
+        value=control.telemetry_enabled(),
+        help="Helps whoever maintains this see which versions are in use and "
+             "whether renders are succeeding.",
+    )
+    if _reporting != control.telemetry_enabled():
+        control.set_telemetry(_reporting)
+    with st.expander("What gets sent"):
+        st.caption(
+            "A random identifier for this installation, the version, whether "
+            "this is a Mac or a Windows PC, what happened (a lesson was "
+            "analysed, a render finished or failed), how long the lesson was "
+            "and how long it took.\n\n"
+            "**Never sent:** the video, the audio, the transcript, your "
+            "outline, your API keys, or any file name or path."
+        )
+
     _available = transcriber.available_memory_mb()
     if _available is not None:
         st.divider()
@@ -414,6 +440,32 @@ st.write(
     "speaker's lower third, a full-screen card for every point, and your "
     "intro and outro."
 )
+
+_status = control.update_status()
+
+if _status["message"]:
+    {"warning": st.warning, "error": st.error}.get(
+        _status["message_kind"], st.info
+    )(_status["message"])
+
+if _status["too_old"]:
+    st.error(
+        f"This copy is version {_status['version']}, and version "
+        f"{_status['latest']} is required. Update before carrying on — "
+        "**Check for updates** in the sidebar."
+    )
+elif _status["update_available"]:
+    with st.container(border=True):
+        columns = st.columns([4, 1])
+        columns[0].markdown(
+            f"**Version {_status['latest']} is available** — you have "
+            f"{_status['version']}."
+            + (f"  \n{_status['notes']}" if _status["notes"] else "")
+        )
+        if columns[1].button("Update now", width="stretch"):
+            with st.spinner("Updating…"):
+                ok, note = control.apply_update()
+            (st.success if ok else st.error)(note)
 
 if HOSTED:
     st.info(
@@ -802,6 +854,14 @@ if st.button("🔍 Analyse recording", type="primary", disabled=not ready, width
             st.session_state.notes = notes
             bar.progress(1.0)
             status.update(label="Analysis complete", state="complete", expanded=False)
+            control.report_async(
+                "analysed",
+                lesson_minutes=round(video_duration / 60, 1),
+                points=len(points),
+                verified=verifier.summarise(verdicts)[verifier.VERIFIED],
+                model=model_used or "offline",
+                engine=engine,
+            )
     except Exception as exc:
         st.error(f"Something went wrong: {exc}")
         with st.expander("Technical details"):
@@ -1104,9 +1164,18 @@ if st.session_state.verdicts:
                 )
                 st.session_state.output_path = output_path
                 st.session_state.render_seconds = time.time() - started
+                control.report_async(
+                    "rendered",
+                    lesson_minutes=round(duration / 60, 1),
+                    seconds=round(st.session_state.render_seconds),
+                    cards=len(cues),
+                    quality=quality,
+                    megabytes=round(os.path.getsize(output_path) / 1e6),
+                )
                 bar.progress(1.0)
                 status.update(label="Render complete", state="complete", expanded=False)
         except Exception as exc:
+            control.report_async("render_failed", reason=type(exc).__name__)
             st.error(f"Rendering failed: {exc}")
             with st.expander("Technical details"):
                 st.code(traceback.format_exc())
