@@ -39,7 +39,10 @@ BOX_FILL = (0, 0, 0, 190)
 BOX_FILL_SOLID = (0, 0, 0, 215)
 
 # --- Full-screen point card template --------------------------------------
-CARD_BG = (223, 218, 209, 255)        # #DFDAD1 beige
+# #CDC7B8. Taken from the background of the supplied logo, which was cropped
+# from a real card — so this is the actual brand colour rather than a guess,
+# and the logo now sits on it without a visible square.
+CARD_BG = (205, 199, 184, 255)
 CARD_TEXT = (18, 18, 18, 255)         # near-black, easier on the eye than #000
 CARD_LOGO_BOX = 120                   # reserved square, top right, in pixels
 CARD_LOGO_MARGIN = 40
