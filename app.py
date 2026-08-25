@@ -13,6 +13,7 @@ Flow:
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -1004,6 +1005,25 @@ if st.session_state.verdicts:
     ):
         if not memory_notice(MEMORY_NEEDED_RENDER_MB, "render this video"):
             st.stop()
+        # Rendering writes a working copy and the finished file alongside the
+        # recording, so it needs roughly twice the recording's size free.
+        source_mb = 0.0
+        try:
+            source_mb = os.path.getsize(st.session_state.video_path) / (1024 * 1024)
+        except OSError:
+            pass
+        need_disk = max(source_mb * 2.2, 500)
+        disk_ok, free_disk = transcriber.disk_headroom_ok(need_disk, workdir())
+        if not disk_ok:
+            st.error(
+                f"There is not enough disk space left to render this "
+                f"({free_disk:.0f} MB free, about {need_disk:.0f} MB needed).\n\n"
+                "Rendering needs room for the recording, a working copy and "
+                "the finished video at the same time. On a shared server this "
+                "usually clears within a few hours; on your own computer, free "
+                "up some space and try again."
+            )
+            st.stop()
         try:
             discard_previous_render()
             output_path = os.path.join(workdir(), "bible_study_final.mp4")
@@ -1050,6 +1070,46 @@ if st.session_state.verdicts:
 # finished file is left on disk and its location shown instead.
 MAX_INMEMORY_DOWNLOAD_MB = 400
 
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+STATIC_MAX_AGE_HOURS = 6
+
+
+def publish_for_download(path: str, name: str) -> str:
+    """
+    Put the finished video where the browser can fetch it directly.
+
+    Streamlit serves anything in ./static over HTTP, so handing over a link
+    costs no memory at all — where st.download_button would first load the
+    entire file into RAM. That is the difference between a 90-minute lesson
+    downloading cleanly and the app dying at the last step.
+
+    Returns the URL path, or "" if static serving is unavailable.
+    """
+    try:
+        os.makedirs(STATIC_DIR, exist_ok=True)
+
+        # Clear out anything left from earlier sessions; these are large.
+        cutoff = time.time() - STATIC_MAX_AGE_HOURS * 3600
+        for old in os.listdir(STATIC_DIR):
+            full = os.path.join(STATIC_DIR, old)
+            try:
+                if os.path.isfile(full) and os.path.getmtime(full) < cutoff:
+                    os.remove(full)
+            except OSError:
+                pass
+
+        target = os.path.join(STATIC_DIR, name)
+        if os.path.exists(target):
+            os.remove(target)
+        # A hard link where possible: instant, and no second copy on disk.
+        try:
+            os.link(path, target)
+        except OSError:
+            shutil.copy2(path, target)
+        return f"app/static/{name}"
+    except Exception:
+        return ""
+
 if st.session_state.output_path and os.path.exists(st.session_state.output_path):
     path = st.session_state.output_path
     size_mb = os.path.getsize(path) / (1024 * 1024)
@@ -1061,7 +1121,24 @@ if st.session_state.output_path and os.path.exists(st.session_state.output_path)
     if size_mb <= 60:
         st.video(path)
 
-    if size_mb <= MAX_INMEMORY_DOWNLOAD_MB:
+    # Served straight from disk, so the size of the lesson does not matter.
+    stem = os.path.splitext(os.path.basename(st.session_state.video_path or "lesson"))[0]
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem)[:60] or "lesson"
+    url = publish_for_download(path, f"{safe}-captioned.mp4")
+
+    if url:
+        st.markdown(
+            f'<a href="{url}" download style="display:block;text-align:center;'
+            'background:#FFCA5C;color:#111;padding:0.75rem 1rem;border-radius:0.5rem;'
+            'font-weight:600;text-decoration:none;">⬇️  Download the finished MP4'
+            '</a>',
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            "The file is served straight from disk, so it downloads at full "
+            "speed however long the lesson is."
+        )
+    elif size_mb <= MAX_INMEMORY_DOWNLOAD_MB:
         with open(path, "rb") as handle:
             st.download_button(
                 "⬇️ Download the finished MP4",
@@ -1072,37 +1149,23 @@ if st.session_state.output_path and os.path.exists(st.session_state.output_path)
                 width="stretch",
             )
     elif HOSTED:
-        # The file is on the server, not on the viewer's computer, so a path
-        # here would be useless — they cannot open it and the container will
-        # discard it. Offer the only thing that actually helps: render again,
-        # smaller.
         st.error(
-            f"The finished video is {size_mb:.0f} MB, which is too large to "
-            "send through the browser from this shared server without running "
-            "it out of memory.\n\n"
-            "**Set *Video quality* to \"Smaller file\" in the sidebar and "
-            "render again.** That produces roughly a third of the size and "
-            "looks virtually the same. Nothing else needs redoing — your "
-            "timings are still here."
+            f"The finished video is {size_mb:.0f} MB and could not be prepared "
+            "for download on this server. Set *Video quality* to "
+            '"Smaller file" in the sidebar and render again.'
         )
     else:
-        # Running locally, so a path is genuinely useful: put a copy next to
-        # the source video, where the user will look for it.
         source = st.session_state.video_path or ""
         folder = os.path.dirname(os.path.abspath(source)) if source else ""
         final = ""
         if folder and os.path.isdir(folder) and os.access(folder, os.W_OK):
-            stem = os.path.splitext(os.path.basename(source))[0]
-            final = os.path.join(folder, f"{stem} - captioned.mp4")
+            stem2 = os.path.splitext(os.path.basename(source))[0]
+            final = os.path.join(folder, f"{stem2} - captioned.mp4")
             try:
                 if not os.path.exists(final) or os.path.getmtime(final) < os.path.getmtime(path):
                     shutil.copy2(path, final)
             except OSError:
                 final = ""
-        st.info(
-            f"This file is {size_mb:.0f} MB — too big to push through the "
-            "browser without the app running out of memory, so it has been "
-            "saved next to your recording instead."
-        )
+        st.info(f"This file is {size_mb:.0f} MB — saved next to your recording.")
         st.code(final or path, language=None)
         st.caption("Open that location in Finder or Explorer to get the video.")

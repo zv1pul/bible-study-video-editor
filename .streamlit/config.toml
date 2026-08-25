@@ -1,4 +1,10 @@
 [server]
+# Serve finished videos straight from disk over HTTP. Without this the only
+# way to hand somebody a file is st.download_button, which loads the whole
+# thing into memory first — fine for a short clip, fatal for a full lesson on
+# a small server. With it, the browser fetches the file directly and Python
+# never touches the bytes, so size stops mattering.
+enableStaticServing = true
 maxUploadSize = 200           # megabytes.
                               #
                               # Deliberately low. Streamlit holds an upload in

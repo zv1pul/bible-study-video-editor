@@ -71,8 +71,26 @@ fetch simply works. Measured on a real lesson: 327 MB in 43 seconds.
   sentence rather than dying part way through.
 * A link has no practical limit.
 * One person renders at a time; a second waits.
-* A finished 23-minute lesson is about 127 MB at the default quality, which
-  downloads through the browser without trouble.
+* Finished videos are served straight from disk rather than through the app,
+  so downloading costs no memory and the length of the lesson does not
+  matter. Measured: a file served at 450 MB/s with zero memory growth.
+* Free memory and free disk are both checked before rendering, so a long
+  lesson is refused with an explanation rather than failing part way.
+
+### How long a lesson can this handle?
+
+From measured rates, per stage, on the free tier:
+
+| Lesson | Recording | Fetch | Render | Finished file |
+|--------|-----------|-------|--------|---------------|
+| 23 min | 327 MB | 43 s | 2.6 min | 126 MB |
+| 45 min | 639 MB | 84 s | 5.0 min | 248 MB |
+| 60 min | 852 MB | 112 s | 6.7 min | 330 MB |
+| 90 min | 1.3 GB | 168 s | 10.0 min | 495 MB |
+
+Every stage streams, so none of them holds the video in memory. The practical
+limits that remain are the container's disk (checked before rendering) and
+the browser needing to stay open while the render runs.
 * The app sleeps after 12 quiet hours and wakes when somebody visits.
 
 For a full-length lesson, use a local install. Sending several gigabytes to a

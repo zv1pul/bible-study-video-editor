@@ -11,3 +11,4 @@ __pycache__/
 !sample/*.mp4
 .DS_Store
 .cache/
+static/

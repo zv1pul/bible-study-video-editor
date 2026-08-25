@@ -184,6 +184,27 @@ def available_memory_mb() -> Optional[float]:
     return None
 
 
+def free_disk_mb(path: str = ".") -> Optional[float]:
+    """Free space on the volume holding `path`, in MB."""
+    try:
+        usage = shutil.disk_usage(path)
+        return usage.free / (1024 * 1024)
+    except Exception:
+        return None
+
+
+def disk_headroom_ok(needed_mb: float, path: str = ".") -> tuple:
+    """
+    (ok, free_mb). A long lesson needs room for the recording, the working
+    copy and the finished file at once, and running out mid-render leaves a
+    truncated video and no explanation.
+    """
+    free = free_disk_mb(path)
+    if free is None:
+        return True, None
+    return free >= needed_mb, free
+
+
 def memory_headroom_ok(needed_mb: float) -> tuple:
     """
     (ok, available_mb). Unknown memory counts as ok — refusing to work on a
