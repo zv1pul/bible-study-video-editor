@@ -44,6 +44,11 @@ CARD_TEXT = (18, 18, 18, 255)         # near-black, easier on the eye than #000
 CARD_LOGO_BOX = 120                   # reserved square, top right, in pixels
 CARD_LOGO_MARGIN = 40
 
+# Type sizes as a fraction of frame height, matching the reference card.
+CARD_HEADER_SCALE = 0.115             # "Principle #1" — large and heavy
+CARD_BODY_SCALE = 0.090               # the point itself, a little smaller
+CARD_HEADER_TOP = 0.10                # where the header sits from the top
+
 # --- Lower third template --------------------------------------------------
 LOWER_THIRD_START = 3.0               # hard cut in at 00:03
 LOWER_THIRD_DURATION = 25.0           # ...and hard cut out at 00:28
@@ -81,33 +86,36 @@ LINE_BREAK = "|"
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
+# The bundled typeface. Shipping it is the whole point: without it the app
+# picks whatever the machine happens to have — Arial on a Mac, DejaVu on a
+# Linux server, Arial on Windows — and the same lesson renders differently
+# depending on who made it. This is one variable font carrying every weight,
+# so a single file keeps every deployment identical.
+BUNDLED_FONT = os.path.join(_HERE, "fonts", "Inter.ttf")
+BUNDLED_WEIGHTS = {False: "Regular", True: "Bold"}
+
+# Only used if the bundled file is missing or unreadable.
 _REGULAR_CANDIDATES = [
     os.environ.get("OVERLAY_FONT", ""),
     *sorted(glob.glob(os.path.join(_HERE, "fonts", "*Regular*.tt*"))),
     *sorted(glob.glob(os.path.join(_HERE, "fonts", "*.tt*"))),
     "/System/Library/Fonts/Supplemental/Arial.ttf",
-    "/System/Library/Fonts/Supplemental/Helvetica.ttc",
     "/Library/Fonts/Arial.ttf",
     "C:/Windows/Fonts/arial.ttf",
     "C:/Windows/Fonts/segoeui.ttf",
-    "C:/Windows/Fonts/calibri.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-    "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
 ]
 
 _BOLD_CANDIDATES = [
     os.environ.get("OVERLAY_FONT_BOLD", ""),
     *sorted(glob.glob(os.path.join(_HERE, "fonts", "*Bold*.tt*"))),
     "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
-    "/System/Library/Fonts/Supplemental/Arial Black.ttf",
     "/Library/Fonts/Arial Bold.ttf",
     "C:/Windows/Fonts/arialbd.ttf",
     "C:/Windows/Fonts/segoeuib.ttf",
-    "C:/Windows/Fonts/calibrib.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-    "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
 ]
 
 _FONT_CACHE: dict = {}
@@ -118,6 +126,19 @@ def load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
     key = (size, bold)
     if key in _FONT_CACHE:
         return _FONT_CACHE[key]
+
+    # The bundled face first, always, so output does not depend on the machine.
+    if os.path.exists(BUNDLED_FONT):
+        try:
+            font = ImageFont.truetype(BUNDLED_FONT, size)
+            try:
+                font.set_variation_by_name(BUNDLED_WEIGHTS[bool(bold)])
+            except Exception:
+                pass  # a static build of the same face is fine too
+            _FONT_CACHE[key] = font
+            return font
+        except Exception:
+            pass
 
     candidates = (_BOLD_CANDIDATES if bold else []) + _REGULAR_CANDIDATES
     for path in candidates:
@@ -140,9 +161,11 @@ def load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
 
 def font_report() -> str:
     """Which font file the overlays will actually use (shown in the UI)."""
+    if os.path.exists(BUNDLED_FONT):
+        return f"{os.path.basename(BUNDLED_FONT)} (bundled — identical everywhere)"
     for path in _BOLD_CANDIDATES + _REGULAR_CANDIDATES:
         if path and os.path.exists(path):
-            return os.path.basename(path)
+            return f"{os.path.basename(path)} (system font — varies by machine)"
     return "Pillow built-in font"
 
 
@@ -263,8 +286,10 @@ def make_point_card_image(
     Lists are left-aligned as a block but the block itself is centred, so the
     numbers line up while the card still looks balanced.
     """
-    header_font = load_font(video_h * 0.072, bold=True)
-    body_font = load_font(video_h * 0.052, bold=False)
+    # Proportions taken from the reference card: a large, heavy header and a
+    # body only a little smaller, both filling the frame confidently.
+    header_font = load_font(video_h * CARD_HEADER_SCALE, bold=True)
+    body_font = load_font(video_h * CARD_BODY_SCALE, bold=False)
 
     img = Image.new("RGBA", (video_w, video_h), CARD_BG)
     draw = ImageDraw.Draw(img)
@@ -286,7 +311,7 @@ def make_point_card_image(
             pass  # a bad logo file must never stop the render
 
     # --- header ------------------------------------------------------------
-    top = int(video_h * 0.16)
+    top = int(video_h * CARD_HEADER_TOP)
     if header:
         # Keep the header clear of the reserved logo square.
         available = video_w - 2 * (CARD_LOGO_MARGIN + logo_box)
@@ -300,13 +325,15 @@ def make_point_card_image(
     # --- body --------------------------------------------------------------
     raw_lines = _split_body(body)
     as_list = _is_list(raw_lines)
-    max_body_w = int(video_w * (0.72 if as_list else 0.76))
+    # A narrower measure than the frame allows, so lines break into short
+    # readable phrases the way the reference cards do.
+    max_body_w = int(video_w * (0.70 if as_list else 0.72))
 
     lines: List[str] = []
     for entry in raw_lines:
-        lines.extend(_wrap(entry, body_font, max_body_w, 4))
+        lines.extend(_wrap(entry, body_font, max_body_w, 5))
 
-    line_h = int(body_font.size * 1.42)
+    line_h = int(body_font.size * 1.24)
     block_h = len(lines) * line_h
 
     # Centre the block in the space left under the header.
