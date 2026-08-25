@@ -314,15 +314,18 @@ with st.sidebar:
     )
 
     st.markdown("**Intro and outro**")
-    _found = [
-        name for name, path in (
-            ("intro", asset_default("intro")),
-            ("outro", asset_default("outro")),
-            ("logo", asset_default("logo")),
-        ) if path
-    ]
+    _assets = {
+        name: asset_default(name) for name in ("intro", "outro", "logo")
+    }
+    _found = [name for name, path in _assets.items() if path]
     if _found:
         st.caption(f"Using {', '.join(_found)} from the assets folder.")
+    if not _assets["intro"] and not _assets["outro"]:
+        st.caption(
+            "No intro or outro set, so none will appear in the video. Upload "
+            "them above, or drop `intro.png` and `outro.png` into the "
+            "`assets` folder to have them used every time."
+        )
     intro_file = st.file_uploader(
         "Opening image", type=["png", "jpg", "jpeg", "webp"], key="intro_img"
     )
@@ -606,7 +609,17 @@ if st.button("🔍 Analyse recording", type="primary", disabled=not ready, width
             )
             st.session_state.segments = segments
             status.update(label="Listening for reflection pauses")
-            silences = transcriber.detect_silences(st.session_state.video_path, 2.0)
+            # Two detectors, because neither is sufficient alone. Measuring
+            # the waveform gives precise edges but a fixed decibel threshold
+            # cannot survive a noisy hall. The transcript has no threshold at
+            # all: Whisper simply produces no segment where nobody speaks, so
+            # a long gap between segments is silence however loud the room is.
+            silences = transcriber.merge_silences(
+                transcriber.detect_silences(st.session_state.video_path, 2.0),
+                transcriber.silences_from_transcript(
+                    segments, matcher.TIMER_MIN_SILENCE
+                ),
+            )
             st.session_state.silences = silences
             long_pauses = [s for s in silences if s["duration"] >= matcher.TIMER_MIN_SILENCE]
             if long_pauses:
@@ -898,6 +911,12 @@ if st.session_state.verdicts:
         extras.append(f"a {bookend_seconds}s intro")
     if outro_path:
         extras.append(f"a {bookend_seconds}s outro")
+    timed = [c for c in cues if c.has_timer]
+    if timed:
+        extras.append(
+            f"a countdown on {len(timed)} application"
+            + ("s" if len(timed) > 1 else "")
+        )
     tail = (", plus " + ", ".join(extras)) if extras else ""
     st.caption(
         f"{len(cues)} {style_word}(s), each on screen for as long as it is "
@@ -906,6 +925,12 @@ if st.session_state.verdicts:
         f"{transcriber.format_timestamp(max(estimate, 5))}."
     )
 
+    if not intro_path and not outro_path:
+        st.info(
+            "No intro or outro image is set, so the video will start and end "
+            "on the recording itself. Add them in the sidebar under "
+            "**Intro and outro**."
+        )
     if not cues:
         st.info("Nothing is switched on to show. Tick at least one point above.")
 

@@ -258,14 +258,89 @@ def download_video(
 # Silence detection
 # --------------------------------------------------------------------------
 
+_MEAN_VOLUME_RE = re.compile(r"mean_volume:\s*(-?[\d.]+)\s*dB")
+_MAX_VOLUME_RE = re.compile(r"max_volume:\s*(-?[\d.]+)\s*dB")
 _SILENCE_START_RE = re.compile(r"silence_start:\s*(-?[\d.]+)")
 _SILENCE_END_RE = re.compile(r"silence_end:\s*([\d.]+)\s*\|\s*silence_duration:\s*([\d.]+)")
+
+
+def measure_levels(media_path: str) -> Dict[str, float]:
+    """The recording's mean and peak loudness, in dB."""
+    result = _run([
+        ffmpeg_exe(), "-hide_banner", "-nostats",
+        "-i", media_path, "-af", "volumedetect", "-f", "null", "-",
+    ])
+    text = result.stderr or ""
+    mean = _MEAN_VOLUME_RE.search(text)
+    peak = _MAX_VOLUME_RE.search(text)
+    return {
+        "mean_db": float(mean.group(1)) if mean else -30.0,
+        "max_db": float(peak.group(1)) if peak else 0.0,
+    }
+
+
+def silence_threshold_for(media_path: str) -> int:
+    """
+    Pick a silence threshold from the recording itself.
+
+    A fixed figure does not survive contact with real rooms. Digital silence
+    sits near -60 dB, but a hall with air conditioning and people shifting in
+    their seats can idle around -30 dB, and a threshold of -32 dB then finds
+    no silence anywhere. The level is therefore measured and the threshold set
+    relative to it.
+    """
+    levels = measure_levels(media_path)
+    # Speech dominates the mean, so quiet is a good margin below it.
+    threshold = levels["mean_db"] - 12.0
+    return int(max(-50.0, min(threshold, -18.0)))
+
+
+def silences_from_transcript(
+    segments: Sequence["Segment"],
+    min_seconds: float = 15.0,
+) -> List[Dict[str, float]]:
+    """
+    Find the quiet stretches from the transcript instead of the waveform.
+
+    Whisper runs with voice-activity detection, so it simply produces no
+    segment where nobody is speaking. A long gap between one segment ending
+    and the next beginning therefore means silence — and unlike a decibel
+    threshold, that holds however noisy the room is.
+    """
+    gaps: List[Dict[str, float]] = []
+    for earlier, later in zip(segments, segments[1:]):
+        gap = float(later["start"]) - float(earlier["end"])
+        if gap >= min_seconds:
+            gaps.append({
+                "start": round(float(earlier["end"]), 2),
+                "end": round(float(later["start"]), 2),
+                "duration": round(gap, 2),
+            })
+    return gaps
+
+
+def merge_silences(*sources: Sequence[Dict[str, float]]) -> List[Dict[str, float]]:
+    """Combine overlapping findings from the different detectors."""
+    everything: List[Dict[str, float]] = []
+    for source in sources:
+        everything.extend(source or [])
+    everything.sort(key=lambda item: item["start"])
+
+    merged: List[Dict[str, float]] = []
+    for item in everything:
+        if merged and item["start"] <= merged[-1]["end"] + 1.0:
+            last = merged[-1]
+            last["end"] = max(last["end"], item["end"])
+            last["duration"] = round(last["end"] - last["start"], 2)
+        else:
+            merged.append(dict(item))
+    return merged
 
 
 def detect_silences(
     media_path: str,
     min_seconds: float = 2.0,
-    noise_db: int = -32,
+    noise_db: Optional[int] = None,
 ) -> List[Dict[str, float]]:
     """
     Find the gaps where nobody is speaking.
@@ -277,6 +352,9 @@ def detect_silences(
     Returns ``[{"start": float, "end": float, "duration": float}, ...]``
     sorted by start time.
     """
+    if noise_db is None:
+        noise_db = silence_threshold_for(media_path)
+
     result = _run([
         ffmpeg_exe(), "-hide_banner", "-nostats",
         "-i", media_path,
