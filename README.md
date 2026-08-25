@@ -474,7 +474,7 @@ ever see *"FFmpeg was not found"*:
 | **Engine** | *On this computer* keeps the recording private and needs no key. *Hosted* is far quicker and is the right choice on a slow laptop or a web host. |
 | **Accuracy vs speed** | `base` is the sweet spot. Move to `small` if the room is echoey or the audio is quiet — it is 2–3× slower but noticeably more accurate. |
 | **Seconds on screen** | Only a fallback. Each point normally gets its own length, worked out from how long it was taught. |
-| **Render speed vs file size** | `ultrafast` renders quickest and makes a bigger file. `medium` is roughly half the size and about twice as slow. |
+| **Video quality** | Measured on a 23-minute lesson: *smaller* ≈ 92 MB, *balanced* ≈ 127 MB, *best* ≈ 206 MB. Balanced is the default and looks like a proper teaching video. |
 | **Rendering engine** | Leave on Fast. It hands the whole composite to FFmpeg in one pass and copies the original audio through untouched — measured at 20× realtime on 1080p, against 1× for the MoviePy path. A 60-minute lesson renders in about 3 minutes instead of an hour. Switch to Compatible only if a particular file refuses to render. |
 | **Point style** | *Full-screen cards* is the template. *Caption over the video* keeps the picture visible. |
 | **Timer** (per row) | Ticked automatically when a reflection pause was measured. Untick to hide the countdown. |

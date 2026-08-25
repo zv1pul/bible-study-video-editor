@@ -68,6 +68,21 @@ TIMER_Y = 0.79                        # fraction of frame height, its top edge
 TIMER_RESERVE = 0.20                  # room kept clear under the body text
 TIMER_MAX_STEPS = 240                 # ceiling on how many second-frames we draw
 
+# Encoder settings, measured on a real 1080p lesson (1324 kb/s source):
+#
+#   ultrafast/23   672 MB for 23 minutes   -- three times the size...
+#   veryfast/23    224 MB                  -- ...for 1.9 seconds saved a minute
+#   veryfast/26    156 MB
+#
+# "ultrafast" is a false economy here: the file it produces is too large to
+# download from a hosted app, and the time it saves is negligible.
+QUALITY_PRESETS = {
+    "small": ("veryfast", 26),      # smallest file, still good for teaching
+    "balanced": ("veryfast", 23),   # the default
+    "best": ("medium", 20),
+}
+DEFAULT_QUALITY = "balanced"
+
 # Bookends
 BOOKEND_DURATION = 5.0
 
@@ -706,6 +721,7 @@ def _concat_bookends(
     duration: float,
     preset: str,
     threads: int,
+    crf: int = 23,
 ) -> bool:
     """
     FFmpeg equivalent of add_bookends, used by the fast rendering path.
@@ -740,7 +756,7 @@ def _concat_bookends(
                     f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,"
                     f"setsar=1,fps={fps}"
                 ),
-                "-c:v", "libx264", "-preset", preset, "-crf", "23",
+                "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
                 "-pix_fmt", "yuv420p", "-threads", str(threads),
                 "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2",
                 "-shortest", piece,
@@ -778,7 +794,7 @@ def _concat_bookends(
              "-filter_complex",
              f"{streams}concat=n={len(order)}:v=1:a=1[v][a]",
              "-map", "[v]", "-map", "[a]",
-             "-c:v", "libx264", "-preset", preset, "-crf", "23",
+             "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
              "-pix_fmt", "yuv420p", "-threads", str(threads),
              "-c:a", "aac", "-b:a", "160k",
              "-movflags", "+faststart", output_path],
@@ -929,6 +945,7 @@ def _render_with_ffmpeg(
     fade: float,
     progress_cb,
     force_audio_encode: bool = False,
+    crf: int = 23,
 ) -> bool:
     """
     Fast path: hand the whole composite to FFmpeg in one pass.
@@ -977,7 +994,7 @@ def _render_with_ffmpeg(
         else:
             command += ["-map", "0:v"]
         command += ["-map", "0:a?", *audio_args,
-                    "-c:v", "libx264", "-preset", preset, "-crf", "23",
+                    "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
                     "-pix_fmt", "yuv420p", "-movflags", "+faststart",
                     "-threads", str(threads), output_path]
         return command
@@ -1025,7 +1042,9 @@ def render_video(
     intro_image_path: Optional[str] = None,
     outro_image_path: Optional[str] = None,
     bookend_duration: float = BOOKEND_DURATION,
-    preset: str = "ultrafast",
+    quality: str = DEFAULT_QUALITY,
+    preset: Optional[str] = None,
+    crf: Optional[int] = None,
     threads: int = 4,
     fade: float = 0.0,
     engine: str = "auto",
@@ -1052,6 +1071,12 @@ def render_video(
     """
     import shutil as _shutil
     import tempfile as _tempfile
+
+    chosen_preset, chosen_crf = QUALITY_PRESETS.get(
+        quality, QUALITY_PRESETS[DEFAULT_QUALITY]
+    )
+    preset = preset or chosen_preset
+    crf = chosen_crf if crf is None else crf
 
     has_bookends = bool(
         (intro_image_path and os.path.exists(intro_image_path))
@@ -1085,7 +1110,7 @@ def render_video(
             if _render_with_ffmpeg(
                 video_path, body_path, specs, duration,
                 preset, threads, fade, progress_cb,
-                force_audio_encode=has_bookends,
+                force_audio_encode=has_bookends, crf=crf,
             ):
                 if not has_bookends:
                     return output_path
@@ -1096,7 +1121,7 @@ def render_video(
                         pass
                 if _concat_bookends(
                     body_path, output_path, intro_image_path, outro_image_path,
-                    width, height, fps, bookend_duration, preset, threads,
+                    width, height, fps, bookend_duration, preset, threads, crf,
                 ):
                     return output_path
         finally:

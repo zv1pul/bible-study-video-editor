@@ -359,11 +359,18 @@ with st.sidebar:
         "Closing image", type=["png", "jpg", "jpeg", "webp"], key="outro_img"
     )
     bookend_seconds = st.slider("Seconds each is held", 2, 15, 5)
-    quality = st.select_slider(
-        "Render speed vs file size",
-        options=["ultrafast", "veryfast", "medium"],
-        value="ultrafast",
-        help="ultrafast = quickest render, biggest file. medium = smaller file, slower.",
+    quality = st.selectbox(
+        "Video quality",
+        options=["small", "balanced", "best"],
+        index=0 if HOSTED else 1,
+        format_func=lambda key: {
+            "small": "Smaller file — quickest to download",
+            "balanced": "Balanced (recommended)",
+            "best": "Best quality — largest file",
+        }[key],
+        help="Measured on a 23-minute lesson: smaller ≈ 156 MB, balanced "
+             "≈ 224 MB, best ≈ 400 MB. Balanced is a good teaching video; "
+             "smaller is barely distinguishable and much easier to move about.",
     )
     threads = st.slider("CPU threads for rendering", 1, 16, 4)
     render_engine = st.radio(
@@ -948,9 +955,12 @@ if st.session_state.verdicts:
     # ----------------------------------------------------------------------
 
     st.subheader("5 · Render the finished video")
-    # Measured on an Apple silicon laptop at 1080p: the FFmpeg path runs at
-    # roughly 20x realtime, MoviePy at roughly 1x.
-    rate = 20.0 if render_engine == "auto" else 1.0
+    # Measured: about 9x realtime on the shared server and 12x on a laptop
+    # at the balanced setting, against roughly 1x through MoviePy.
+    if render_engine != "auto":
+        rate = 1.0
+    else:
+        rate = 9.0 if HOSTED else 12.0
     estimate = duration / rate if duration else 0.0
     style_word = "full-screen card" if card_style == "fullscreen" else "caption"
     extras = []
@@ -1021,7 +1031,7 @@ if st.session_state.verdicts:
                     outro_image_path=outro_path,
                     bookend_duration=float(bookend_seconds),
                     fade=0.25 if soft_transitions else 0.0,
-                    preset=quality,
+                    quality=quality,
                     threads=int(threads),
                     engine=render_engine,
                     progress_cb=on_render,
@@ -1061,8 +1071,23 @@ if st.session_state.output_path and os.path.exists(st.session_state.output_path)
                 type="primary",
                 width="stretch",
             )
+    elif HOSTED:
+        # The file is on the server, not on the viewer's computer, so a path
+        # here would be useless — they cannot open it and the container will
+        # discard it. Offer the only thing that actually helps: render again,
+        # smaller.
+        st.error(
+            f"The finished video is {size_mb:.0f} MB, which is too large to "
+            "send through the browser from this shared server without running "
+            "it out of memory.\n\n"
+            "**Set *Video quality* to \"Smaller file\" in the sidebar and "
+            "render again.** That produces roughly a third of the size and "
+            "looks virtually the same. Nothing else needs redoing — your "
+            "timings are still here."
+        )
     else:
-        # Put a copy next to the source video, where the user will look for it.
+        # Running locally, so a path is genuinely useful: put a copy next to
+        # the source video, where the user will look for it.
         source = st.session_state.video_path or ""
         folder = os.path.dirname(os.path.abspath(source)) if source else ""
         final = ""
@@ -1076,7 +1101,8 @@ if st.session_state.output_path and os.path.exists(st.session_state.output_path)
                 final = ""
         st.info(
             f"This file is {size_mb:.0f} MB — too big to push through the "
-            "browser without the app running out of memory."
+            "browser without the app running out of memory, so it has been "
+            "saved next to your recording instead."
         )
         st.code(final or path, language=None)
         st.caption("Open that location in Finder or Explorer to get the video.")

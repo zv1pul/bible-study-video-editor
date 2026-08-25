@@ -71,6 +71,8 @@ fetch simply works. Measured on a real lesson: 327 MB in 43 seconds.
   sentence rather than dying part way through.
 * A link has no practical limit.
 * One person renders at a time; a second waits.
+* A finished 23-minute lesson is about 127 MB at the default quality, which
+  downloads through the browser without trouble.
 * The app sleeps after 12 quiet hours and wakes when somebody visits.
 
 For a full-length lesson, use a local install. Sending several gigabytes to a
