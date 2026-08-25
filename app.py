@@ -713,17 +713,19 @@ if st.button("🔍 Analyse recording", type="primary", disabled=not ready, width
             )
             st.session_state.segments = segments
             status.update(label="Listening for reflection pauses")
-            # Two detectors, because neither is sufficient alone. Measuring
-            # the waveform gives precise edges but a fixed decibel threshold
-            # cannot survive a noisy hall. The transcript has no threshold at
-            # all: Whisper simply produces no segment where nobody speaks, so
-            # a long gap between segments is silence however loud the room is.
-            silences = transcriber.merge_silences(
-                transcriber.detect_silences(st.session_state.video_path, 2.0),
-                transcriber.silences_from_transcript(
-                    segments, matcher.TIMER_MIN_SILENCE
-                ),
+            # The transcript already tells us where nobody was speaking, and
+            # costs nothing to read: Whisper produces no segment during
+            # silence, so a long gap between segments is a pause however noisy
+            # the room is. Scanning the waveform means decoding the audio
+            # twice more, so it is kept in reserve for the case where the
+            # transcript shows no pause at all.
+            silences = transcriber.silences_from_transcript(
+                segments, matcher.TIMER_MIN_SILENCE
             )
+            if not silences:
+                silences = transcriber.detect_silences(
+                    st.session_state.video_path, matcher.TIMER_MIN_SILENCE
+                )
             st.session_state.silences = silences
             long_pauses = [s for s in silences if s["duration"] >= matcher.TIMER_MIN_SILENCE]
             if long_pauses:
