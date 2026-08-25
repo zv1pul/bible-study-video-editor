@@ -229,6 +229,44 @@ _DRIVE_HIDDEN_RE = re.compile(
 )
 
 
+def _explain_html_response(response) -> str:
+    """
+    Turn Google's page into an instruction rather than a shrug.
+
+    Every one of these is something the person can fix in Drive in a few
+    seconds, provided they are told which one it is.
+    """
+    body = ""
+    try:
+        body = response.text[:4000].lower()
+    except Exception:
+        pass
+
+    if "too many users have viewed" in body or "download quota" in body:
+        return (
+            "Google Drive has temporarily blocked downloads of this file "
+            "because it has been fetched many times today. Wait a few hours, "
+            "or make a copy of the file in Drive and share the copy."
+        )
+    if any(word in body for word in
+           ("sign in", "signin", "request access", "you need access")):
+        return (
+            "That file is not shared publicly, so the app cannot reach it. "
+            "Open it in Drive, press Share, and set it to 'Anyone with the "
+            "link'. Sharing only within your organisation is not enough."
+        )
+    if "docs.google.com" in response.url or "/document/" in response.url:
+        return (
+            "That link points to a Google document rather than a video file. "
+            "Use the link to the uploaded video itself."
+        )
+    return (
+        "That link returned a web page rather than a video. Open the file in "
+        "Drive, press Share, and set it to 'Anyone with the link', then paste "
+        "the link again."
+    )
+
+
 def _clear_drive_interstitial(session, response):
     """
     Get past Google Drive's "we can't scan this file for viruses" page.
@@ -271,10 +309,23 @@ def download_video(
     session.headers["User-Agent"] = "Mozilla/5.0"
 
     response = session.get(resolved, stream=True, timeout=60)
+
+    if response.status_code == 404:
+        raise RuntimeError(
+            "Google Drive will not open that file. Either the link is wrong, "
+            "or the file is not shared — open it in Drive, press Share, and "
+            "set it to 'Anyone with the link'. A file shared only with your "
+            "organisation will not work here."
+        )
+    if response.status_code == 403:
+        raise RuntimeError(
+            "Google Drive refused access to that file. Set its sharing to "
+            "'Anyone with the link', then paste the link again."
+        )
     if response.status_code != 200:
         raise RuntimeError(
-            f"Could not fetch that link ({response.status_code}). Check it is "
-            "shared so that anyone with the link can view it."
+            f"Could not fetch that link ({response.status_code}). Check the "
+            "link is right and the file is shared with anyone who has it."
         )
 
     if "text/html" in response.headers.get("content-type", ""):
@@ -284,11 +335,8 @@ def download_video(
             response = confirmed
 
     if "text/html" in response.headers.get("content-type", ""):
-        raise RuntimeError(
-            "That link returned a web page rather than a video. Open the "
-            "file's sharing settings and set it to 'Anyone with the link', "
-            "then paste the link again."
-        )
+        # Still a web page. Say which page, so the fix is obvious.
+        raise RuntimeError(_explain_html_response(response))
 
     declared = int(response.headers.get("content-length") or 0)
     if max_bytes and declared > max_bytes:
