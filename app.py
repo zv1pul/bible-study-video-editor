@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import traceback
@@ -1244,38 +1245,62 @@ if st.session_state.output_path and os.path.exists(st.session_state.output_path)
         st.video(path)
 
     stem = os.path.splitext(os.path.basename(st.session_state.video_path or "lesson"))[0]
+    # Underscores are for the URL, where spaces are awkward. A file saved on
+    # somebody's own disk should keep the name they gave the recording.
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem)[:60] or "lesson"
+    friendly = re.sub(r'[/\\:]', "-", stem)[:80] or "lesson"
 
-    if IS_PACKAGED:
-        # The finished video goes straight to Movies, where people look for
-        # videos, and the app offers to open the folder. No download needed.
-        os.makedirs(PACKAGED_OUTPUT_DIR, exist_ok=True)
-        saved = os.path.join(PACKAGED_OUTPUT_DIR, f"{safe} - captioned.mp4")
+    if not HOSTED:
+        # Running on the user's own computer, so the file is already on their
+        # disk. Downloading it through the browser would only make a second
+        # copy in Downloads and leave them hunting for it. Save it somewhere
+        # obvious and offer to open the folder instead.
+        if IS_PACKAGED:
+            folder = PACKAGED_OUTPUT_DIR
+        else:
+            source = st.session_state.video_path or ""
+            folder = os.path.dirname(os.path.abspath(source)) if source else ""
+        if not folder or not os.access(folder, os.W_OK):
+            folder = os.path.join(os.path.expanduser("~"), "Movies")
+        os.makedirs(folder, exist_ok=True)
+
+        saved = os.path.join(folder, f"{friendly} - captioned.mp4")
         try:
             if not os.path.exists(saved) or os.path.getmtime(saved) < os.path.getmtime(path):
                 shutil.copy2(path, saved)
         except OSError:
             saved = path
-        st.success(f"Saved to your Movies folder as **{os.path.basename(saved)}**")
-        if st.button("📂  Show it in Finder", width="stretch"):
-            subprocess.run(["open", "-R", saved], check=False)
+
+        st.success(f"Saved as **{os.path.basename(saved)}**")
         st.code(saved, language=None)
+        if sys.platform == "darwin":
+            if st.button("📂  Show it in Finder", width="stretch"):
+                subprocess.run(["open", "-R", saved], check=False)
+        elif sys.platform.startswith("win"):
+            if st.button("📂  Show it in Explorer", width="stretch"):
+                subprocess.run(["explorer", "/select,", saved], check=False)
         st.stop()
 
     # Served straight from disk, so the size of the lesson does not matter.
     url = publish_for_download(path, f"{safe}-captioned.mp4")
 
     if url:
-        st.markdown(
+        # st.html, not st.markdown. Markdown links get target="_blank" added,
+        # and a browser ignores the download attribute on a link that opens in
+        # a new tab — so the video played in a tab instead of being saved.
+        link = (
             f'<a href="{url}" download style="display:block;text-align:center;'
-            'background:#FFCA5C;color:#111;padding:0.75rem 1rem;border-radius:0.5rem;'
-            'font-weight:600;text-decoration:none;">⬇️  Download the finished MP4'
-            '</a>',
-            unsafe_allow_html=True,
+            'background:#FFCA5C;color:#111;padding:0.75rem 1rem;'
+            'border-radius:0.5rem;font-weight:600;text-decoration:none;">'
+            '⬇️  Download the finished MP4</a>'
         )
+        try:
+            st.html(link)
+        except AttributeError:      # very old Streamlit
+            st.markdown(link, unsafe_allow_html=True)
         st.caption(
-            "The file is served straight from disk, so it downloads at full "
-            "speed however long the lesson is."
+            "Served straight from disk, so it downloads at full speed however "
+            "long the lesson is. It will land in your Downloads folder."
         )
     elif size_mb <= MAX_INMEMORY_DOWNLOAD_MB:
         with open(path, "rb") as handle:
