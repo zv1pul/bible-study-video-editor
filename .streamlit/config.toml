@@ -1,10 +1,18 @@
 [server]
-maxUploadSize = 1024          # megabytes. Streamlit buffers an upload in
-                              # memory, so this must stay inside the host's
-                              # RAM. A free hosted app has about 1 GB in
-                              # total; locally, use "Use a file already on
-                              # this computer" for anything large — it reads
-                              # from disk with no limit at all.
+maxUploadSize = 200           # megabytes.
+                              #
+                              # Deliberately low. Streamlit holds an upload in
+                              # memory for the whole session, and a hosted app
+                              # has about 1 GB in total, so a large upload
+                              # kills the container with an unexplained error
+                              # page. Streamlit enforces this limit itself and
+                              # says so plainly in the uploader, which is a far
+                              # better experience than a crash.
+                              #
+                              # It is not a limit on what the tool can handle.
+                              # Larger recordings go in by link (streamed
+                              # straight to disk) or, locally, by path (read
+                              # from disk). Neither has any size limit.
 
 
 [browser]

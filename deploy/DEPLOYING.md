@@ -56,7 +56,14 @@ streamed to disk a megabyte at a time and never sits in memory — verified at
 5 MB of growth while fetching a 16 MB file. Google Drive and Dropbox share
 links both work; set Drive sharing to "Anyone with the link" first.
 
-* Uploads are capped at 400 MB and warn above 250 MB.
+* Uploads are capped at 200 MB, enforced by Streamlit itself, which says so
+  plainly in the uploader. The cap is set low on purpose: an upload large
+  enough to exhaust the container would otherwise kill it and show an
+  unexplained error page, which is the worst thing that can happen to
+  somebody who did not sign up to think about memory.
+* Free memory is checked before analysing and before rendering. If another
+  person is mid-render there is not enough left, and the app says so in a
+  sentence rather than dying part way through.
 * A link has no practical limit.
 * One person renders at a time; a second waits.
 * The app sleeps after 12 quiet hours and wakes when somebody visits.

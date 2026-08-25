@@ -132,8 +132,34 @@ HOSTED = is_hosted()
 # hosted container it — not the rendering — is what runs the machine out of
 # memory. Measured: a full 1080p render peaks at about 130 MB, while a 500 MB
 # upload sits in RAM the entire time it is being worked on.
-HOSTED_UPLOAD_WARN_MB = 250
-HOSTED_UPLOAD_MAX_MB = 400
+HOSTED_UPLOAD_WARN_MB = 150
+HOSTED_UPLOAD_MAX_MB = 200
+
+# Measured headroom needed for the heavy steps. Rendering peaked at ~130 MB
+# on a full 1080p lesson; the rest is Streamlit itself and the working copy.
+MEMORY_NEEDED_ANALYSE_MB = 250
+MEMORY_NEEDED_RENDER_MB = 300
+
+
+def memory_notice(needed_mb: float, doing: str) -> bool:
+    """
+    Say plainly whether there is room to do this, before starting it.
+
+    Running out mid-way shows an unexplained error page and loses the work,
+    which is the worst possible outcome for somebody who did not ask to think
+    about memory. Checking first turns that into a sentence they can act on.
+    """
+    ok, available = transcriber.memory_headroom_ok(needed_mb)
+    if available is None or ok:
+        return True
+    st.error(
+        f"There is not enough free memory on this server to {doing} right now "
+        f"({available:.0f} MB free, about {needed_mb:.0f} MB needed).\n\n"
+        "This usually means somebody else is using the app at the same time. "
+        "Wait a minute and try again — or run the app on your own computer, "
+        "where there is no such limit."
+    )
+    return False
 
 ASSET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 
@@ -355,6 +381,20 @@ with st.sidebar:
     )
     st.caption(f"Overlay font: {editor.font_report()}")
 
+    _available = transcriber.available_memory_mb()
+    if _available is not None:
+        st.divider()
+        st.subheader("This server")
+        st.progress(
+            max(0.0, min(1.0, 1 - _available / 1024.0)),
+            text=f"{_available:.0f} MB free of about 1024 MB",
+        )
+        if _available < MEMORY_NEEDED_RENDER_MB:
+            st.warning(
+                "Memory is low, most likely because somebody else is using "
+                "the app. Give it a minute."
+            )
+
 # --------------------------------------------------------------------------
 # Main form
 # --------------------------------------------------------------------------
@@ -366,6 +406,16 @@ st.write(
     "speaker's lower third, a full-screen card for every point, and your "
     "intro and outro."
 )
+
+if HOSTED:
+    st.info(
+        "**Before you start — put the recording in Google Drive and paste the "
+        "link below.**\n\n"
+        "Share it so that *anyone with the link* can view it. Pasting a link "
+        "works for a lesson of any length. Uploading a file is limited to "
+        f"{HOSTED_UPLOAD_MAX_MB} MB here, because this shared server has to "
+        "hold an upload in memory the whole time."
+    )
 
 left, right = st.columns([1, 1], gap="large")
 
@@ -587,6 +637,8 @@ if not ready:
     st.info("Upload a video and enter at least one lesson point to begin.")
 
 if st.button("🔍 Analyse recording", type="primary", disabled=not ready, width="stretch"):
+    if not memory_notice(MEMORY_NEEDED_ANALYSE_MB, "analyse this recording"):
+        st.stop()
     st.session_state.output_path = None
     try:
         with st.status("Working…", expanded=True) as status:
@@ -940,6 +992,8 @@ if st.session_state.verdicts:
         width="stretch",
         disabled=not cues,
     ):
+        if not memory_notice(MEMORY_NEEDED_RENDER_MB, "render this video"):
+            st.stop()
         try:
             discard_previous_render()
             output_path = os.path.join(workdir(), "bible_study_final.mp4")

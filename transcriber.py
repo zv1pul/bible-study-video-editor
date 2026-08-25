@@ -162,6 +162,40 @@ def has_video_track(media_path: str) -> bool:
 
 
 # --------------------------------------------------------------------------
+# How much memory is left
+# --------------------------------------------------------------------------
+
+
+def available_memory_mb() -> Optional[float]:
+    """
+    Memory the machine can still hand out, in MB, or None if it cannot tell.
+
+    Reads MemAvailable from /proc, which exists on Linux — where the hosted
+    app runs, and where running out is fatal. Returns None on macOS and
+    Windows, which is the honest answer rather than a guess.
+    """
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) / 1024.0
+    except Exception:
+        pass
+    return None
+
+
+def memory_headroom_ok(needed_mb: float) -> tuple:
+    """
+    (ok, available_mb). Unknown memory counts as ok — refusing to work on a
+    machine we cannot measure would be worse than letting it try.
+    """
+    available = available_memory_mb()
+    if available is None:
+        return True, None
+    return available >= needed_mb, available
+
+
+# --------------------------------------------------------------------------
 # Fetching a recording from a link
 # --------------------------------------------------------------------------
 
