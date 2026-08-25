@@ -56,6 +56,11 @@ streamed to disk a megabyte at a time and never sits in memory — verified at
 5 MB of growth while fetching a 16 MB file. Google Drive and Dropbox share
 links both work; set Drive sharing to "Anyone with the link" first.
 
+Drive answers the plain download link for any file over about 100 MB — which
+is every real lesson — with a "we can't scan this for viruses" confirmation
+page rather than the video. The app reads that form and submits it, so the
+fetch simply works. Measured on a real lesson: 327 MB in 43 seconds.
+
 * Uploads are capped at 200 MB, enforced by Streamlit itself, which says so
   plainly in the uploader. The cap is set low on purpose: an upload large
   enough to exhaust the container would otherwise kill it and show an

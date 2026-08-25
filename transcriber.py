@@ -223,6 +223,34 @@ def direct_download_url(url: str) -> str:
     return url
 
 
+_DRIVE_FORM_RE = re.compile(r'<form[^>]+action="([^"]+)"', re.I)
+_DRIVE_HIDDEN_RE = re.compile(
+    r'<input\s+type="hidden"\s+name="([^"]+)"\s+value="([^"]*)"', re.I
+)
+
+
+def _clear_drive_interstitial(session, response):
+    """
+    Get past Google Drive's "we can't scan this file for viruses" page.
+
+    Any Drive file beyond about 100 MB — which is every real lesson — answers
+    the plain download link with an HTML confirmation form rather than the
+    video. The form carries a one-time token, so it has to be read and
+    submitted before the file is served.
+    """
+    body = response.text
+    action = _DRIVE_FORM_RE.search(body)
+    if not action:
+        return None
+    fields = dict(_DRIVE_HIDDEN_RE.findall(body))
+    if not fields:
+        return None
+    return session.get(
+        action.group(1).replace("&amp;", "&"),
+        params=fields, stream=True, timeout=60,
+    )
+
+
 def download_video(
     url: str,
     destination: str,
@@ -239,47 +267,62 @@ def download_video(
     resolved = direct_download_url(url)
     _report(progress_cb, 0.01, "Fetching the recording…")
 
-    with requests.get(resolved, stream=True, timeout=60,
-                      headers={"User-Agent": "Mozilla/5.0"}) as response:
-        if response.status_code != 200:
-            raise RuntimeError(
-                f"Could not fetch that link ({response.status_code}). Check it "
-                "is shared so that anyone with the link can view it."
-            )
+    session = requests.Session()
+    session.headers["User-Agent"] = "Mozilla/5.0"
 
-        kind = response.headers.get("content-type", "")
-        if "text/html" in kind:
-            raise RuntimeError(
-                "That link returned a web page rather than a video. For Google "
-                "Drive, set sharing to 'Anyone with the link'. Very large "
-                "Drive files cannot be fetched this way — download it and "
-                "upload the file instead."
-            )
+    response = session.get(resolved, stream=True, timeout=60)
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"Could not fetch that link ({response.status_code}). Check it is "
+            "shared so that anyone with the link can view it."
+        )
 
-        declared = int(response.headers.get("content-length") or 0)
-        if max_bytes and declared > max_bytes:
-            raise RuntimeError(
-                f"That file is {declared / 1e6:.0f} MB, over the "
-                f"{max_bytes / 1e6:.0f} MB limit for this server."
-            )
+    if "text/html" in response.headers.get("content-type", ""):
+        _report(progress_cb, 0.02, "Confirming the download with Google Drive…")
+        confirmed = _clear_drive_interstitial(session, response)
+        if confirmed is not None and confirmed.status_code == 200:
+            response = confirmed
 
-        written = 0
-        with open(destination, "wb") as handle:
-            for block in response.iter_content(chunk_size=DOWNLOAD_CHUNK):
-                if not block:
-                    continue
-                handle.write(block)
-                written += len(block)
-                if max_bytes and written > max_bytes:
-                    handle.close()
-                    os.remove(destination)
-                    raise RuntimeError(
-                        f"That file is larger than the {max_bytes / 1e6:.0f} MB "
-                        "limit for this server."
-                    )
+    if "text/html" in response.headers.get("content-type", ""):
+        raise RuntimeError(
+            "That link returned a web page rather than a video. Open the "
+            "file's sharing settings and set it to 'Anyone with the link', "
+            "then paste the link again."
+        )
+
+    declared = int(response.headers.get("content-length") or 0)
+    if max_bytes and declared > max_bytes:
+        raise RuntimeError(
+            f"That file is {declared / 1e6:.0f} MB, over the "
+            f"{max_bytes / 1e6:.0f} MB limit for this server."
+        )
+
+    written = 0
+    # Report about every 2%, not every megabyte: each update redraws the page,
+    # and three hundred redraws during one download makes it feel stuck.
+    step = max(declared // 50, 4 * DOWNLOAD_CHUNK) if declared else 8 * DOWNLOAD_CHUNK
+    next_report = step
+
+    with open(destination, "wb") as handle:
+        for block in response.iter_content(chunk_size=DOWNLOAD_CHUNK):
+            if not block:
+                continue
+            handle.write(block)
+            written += len(block)
+            if max_bytes and written > max_bytes:
+                handle.close()
+                os.remove(destination)
+                raise RuntimeError(
+                    f"That file is larger than the {max_bytes / 1e6:.0f} MB "
+                    "limit for this server."
+                )
+            if written >= next_report:
+                next_report = written + step
                 if declared:
                     _report(progress_cb, min(written / declared, 1.0),
                             f"Fetching… {written / 1e6:.0f} of {declared / 1e6:.0f} MB")
+                else:
+                    _report(progress_cb, 0.5, f"Fetching… {written / 1e6:.0f} MB")
 
     if written < 1024:
         os.remove(destination)
