@@ -328,7 +328,27 @@ with st.sidebar:
              "the teaching continues underneath. Captions keep the picture "
              "visible and put a small card along the bottom.",
     )
-    caption_seconds = st.slider("Seconds each point stays on screen", 3, 20, 8)
+    caption_seconds = st.slider(
+        "Fallback seconds on screen", 3, 20, 8,
+        help="Only used when a point has no end time of its own. Normally "
+             "each card stays up for as long as the point is being taught, "
+             "with a floor so it can be written down.",
+    )
+    discussion_seconds = st.slider(
+        "Discussion time after each application", 10, 120,
+        int(matcher.APPLICATION_PAUSE_SECONDS), step=5,
+        help="A countdown of this length follows every application question. "
+             "The speaker's own wait in the recording, however long, is cut "
+             "out and replaced by it, so the video moves straight on to where "
+             "they resume.",
+    )
+    overview_card = st.checkbox(
+        "Show the takeaway and divisions together on one card",
+        value=True,
+        help="Shown from just before the takeaway is spoken until the first "
+             "division is introduced — long enough to be written down. The "
+             "divisions then each get their own card when introduced.",
+    )
     soft_transitions = st.checkbox(
         "Soften the cuts",
         value=False,
@@ -774,11 +794,11 @@ if st.button("🔍 Analyse recording", type="primary", disabled=not ready, width
             # twice more, so it is kept in reserve for the case where the
             # transcript shows no pause at all.
             silences = transcriber.silences_from_transcript(
-                segments, matcher.TIMER_MIN_SILENCE
+                segments, matcher.APPLICATION_GAP_MIN
             )
             if not silences:
                 silences = transcriber.detect_silences(
-                    st.session_state.video_path, matcher.TIMER_MIN_SILENCE
+                    st.session_state.video_path, matcher.APPLICATION_GAP_MIN
                 )
             st.session_state.silences = silences
             long_pauses = [s for s in silences if s["duration"] >= matcher.TIMER_MIN_SILENCE]
@@ -810,6 +830,8 @@ if st.button("🔍 Analyse recording", type="primary", disabled=not ready, width
                 speaker_title=speaker_title,
                 silences=silences,
                 other_keys={backup_provider: backup_key.strip()},
+                pause_seconds=float(discussion_seconds),
+                overview_card=overview_card,
                 progress_cb=on_progress,
             )
             if model_used:
@@ -835,6 +857,8 @@ if st.button("🔍 Analyse recording", type="primary", disabled=not ready, width
                         speaker_title=speaker_title,
                         silences=silences,
                         other_keys={backup_provider: backup_key.strip()},
+                        pause_seconds=float(discussion_seconds),
+                        overview_card=overview_card,
                     )
                     if not second_used:
                         second = None
@@ -918,7 +942,10 @@ if st.session_state.verdicts:
                 ),
                 "Timer": bool(v.match.has_timer),
                 "Pause": (
-                    f"{v.match.timer_duration:.0f}s" if v.match.has_timer else "—"
+                    f"{v.match.timer_duration:.0f}s"
+                    + (f" (cuts {v.match.cut_end - v.match.cut_start:.0f}s wait)"
+                       if v.match.cut_end > v.match.cut_start else "")
+                    if v.match.has_timer else "—"
                 ),
                 "Score": float(v.score),
                 "Heard": v.match.evidence,
@@ -962,7 +989,8 @@ if st.session_state.verdicts:
             ),
             "Pause": st.column_config.TextColumn(
                 "Pause", disabled=True, width="small",
-                help="Length of the silence measured after the question.",
+                help="Discussion time inserted after the question, and how "
+                     "much of the speaker's own wait it replaces.",
             ),
             "Score": st.column_config.ProgressColumn(
                 "Score", min_value=0.0, max_value=1.0, format="%.2f",
@@ -976,20 +1004,14 @@ if st.session_state.verdicts:
     )
 
     active = edited[edited["Show"].fillna(False).astype(bool)]
-    pauses = {
-        v.match.text: float(v.match.timer_duration or 0.0) for v in verdicts
-    }
+    plans = {v.match.text: v.match for v in verdicts}
     requested = []
     for _, row in active.iterrows():
         start = float(row["Start (s)"])
         end = float(row["End (s)"])
         span = end - start
         wants_timer = bool(row.get("Timer", False))
-        pause = pauses.get(str(row["Point"]), 0.0)
-        if wants_timer and pause <= 0:
-            # Ticked by hand with no measured pause: fall back to the length
-            # of the card itself so the countdown still means something.
-            pause = max(span, 0.0)
+        plan = plans.get(str(row["Point"]))
         requested.append(
             editor.Cue(
                 text=str(row["Point"]),
@@ -997,7 +1019,13 @@ if st.session_state.verdicts:
                 label=str(row.get("Header") or row.get("Type", "")).strip(),
                 duration=span if span > 0.05 else float(caption_seconds),
                 has_timer=wants_timer,
-                timer_duration=pause if wants_timer else 0.0,
+                timer_duration=float(discussion_seconds) if wants_timer else 0.0,
+                pause_at=(float(plan.pause_at) if plan and wants_timer else 0.0)
+                         or (end if wants_timer else 0.0),
+                cut_start=float(plan.cut_start) if plan and wants_timer else 0.0,
+                cut_end=float(plan.cut_end) if plan and wants_timer else 0.0,
+                items=list(plan.items) if plan else [],
+                kind=str(row.get("Type", "")),
             )
         )
 
@@ -1070,7 +1098,12 @@ if st.session_state.verdicts:
         rate = 1.0
     else:
         rate = 9.0 if HOSTED else 12.0
-    estimate = duration / rate if duration else 0.0
+    removed = sum(c.cut_end - c.cut_start for c in cues if c.cut_end > c.cut_start)
+    inserted = sum(c.timer_duration for c in cues if c.has_timer)
+    bookends = (float(bookend_seconds) if intro_path else 0.0) + \
+               (float(bookend_seconds) if outro_path else 0.0)
+    final_length = max(duration - removed + inserted + bookends, 0.0)
+    estimate = final_length / rate if duration else 0.0
     style_word = "full-screen card" if card_style == "fullscreen" else "caption"
     extras = []
     if speaker_name.strip() or speaker_title.strip():
@@ -1089,9 +1122,18 @@ if st.session_state.verdicts:
             + ("s" if len(timed) > 1 else "")
         )
     tail = (", plus " + ", ".join(extras)) if extras else ""
+    length_note = ""
+    if removed or inserted:
+        length_note = (
+            f" The finished video will run about "
+            f"{transcriber.format_timestamp(final_length)}"
+            + (f" — {transcriber.format_timestamp(removed)} of waiting cut out" if removed else "")
+            + (f", {transcriber.format_timestamp(inserted)} of discussion time added" if inserted else "")
+            + "."
+        )
     st.caption(
         f"{len(cues)} {style_word}(s), each on screen for as long as it is "
-        f"taught{tail}. "
+        f"taught{tail}.{length_note} "
         f"Estimated render time: about "
         f"{transcriber.format_timestamp(max(estimate, 5))}."
     )

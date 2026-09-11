@@ -21,7 +21,7 @@ from __future__ import annotations
 import glob
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Sequence
 
 import numpy as np
@@ -451,6 +451,82 @@ def timer_steps(duration: float) -> List[tuple]:
     return steps
 
 
+def make_overview_card_image(
+    video_w: int,
+    video_h: int,
+    takeaway: str,
+    divisions: Sequence[str],
+    logo_path: Optional[str] = None,
+) -> np.ndarray:
+    """
+    The opening card: the takeaway with the divisions listed beneath it.
+
+    Shown from just before the takeaway is spoken until the first division
+    is introduced, so it stays up through the whole of that opening section —
+    long enough to be written down, which a card that flashed for eight
+    seconds never was.
+    """
+    header_font = load_font(video_h * CARD_HEADER_SCALE * 0.78, bold=True)
+    body_font = load_font(video_h * CARD_BODY_SCALE * 0.86, bold=False)
+    sub_font = load_font(video_h * CARD_HEADER_SCALE * 0.52, bold=True)
+    list_font = load_font(video_h * CARD_BODY_SCALE * 0.66, bold=False)
+
+    img = Image.new("RGBA", (video_w, video_h), CARD_BG)
+    draw = ImageDraw.Draw(img)
+
+    if logo_path and os.path.exists(logo_path):
+        try:
+            logo = Image.open(logo_path).convert("RGBA")
+            logo.thumbnail((CARD_LOGO_BOX, CARD_LOGO_BOX), Image.LANCZOS)
+            img.alpha_composite(
+                logo, (video_w - CARD_LOGO_MARGIN - logo.width, CARD_LOGO_MARGIN)
+            )
+        except Exception:
+            pass
+
+    # Lay everything out first so the whole block can be centred vertically.
+    header = "Takeaway"
+    body_lines = _wrap(takeaway, body_font, int(video_w * 0.76), 4)
+    items = [str(d) for d in divisions if str(d).strip()]
+    list_lines: List[str] = []
+    for item in items:
+        list_lines.extend(_wrap(item, list_font, int(video_w * 0.82), 2))
+
+    header_h = int(header_font.size * 1.35)
+    body_h = int(body_font.size * 1.24)
+    sub_h = int(sub_font.size * 1.5)
+    list_h = int(list_font.size * 1.3)
+    gap = int(video_h * 0.06)
+
+    total = header_h + len(body_lines) * body_h
+    if items:
+        total += gap + sub_h + len(list_lines) * list_h
+
+    y = max(int(video_h * 0.09), (video_h - total) // 2)
+
+    draw.text(((video_w - _text_width(header, header_font)) / 2, y), header,
+              font=header_font, fill=CARD_TEXT)
+    y += header_h
+    for line in body_lines:
+        draw.text(((video_w - _text_width(line, body_font)) / 2, y), line,
+                  font=body_font, fill=CARD_TEXT)
+        y += body_h
+
+    if items:
+        y += gap
+        sub = "Divisions"
+        draw.text(((video_w - _text_width(sub, sub_font)) / 2, y), sub,
+                  font=sub_font, fill=CARD_TEXT)
+        y += sub_h
+        widest = max(_text_width(line, list_font) for line in list_lines)
+        left = (video_w - widest) / 2
+        for line in list_lines:
+            draw.text((left, y), line, font=list_font, fill=CARD_TEXT)
+            y += list_h
+
+    return np.array(img)
+
+
 def make_lower_third_image(
     video_w: int,
     video_h: int,
@@ -497,13 +573,18 @@ def make_lower_third_image(
     img = Image.new("RGBA", (max(width, 1), max(height, 1)), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
+    # A thin, hard outline rather than a soft halo. The halo — translucent
+    # copies of the text offset in four directions — looked fine on a still
+    # but turned to fuzz once the video was compressed, and the name read as
+    # blurry. A crisp one-pixel-per-540-lines stroke survives encoding.
+    stroke = max(1, int(round(video_h / 540)))
+
     def write(text: str, font, x: float, y: float) -> None:
         if shadow:
-            # A cheap halo: the same glyphs in translucent black, offset in
-            # four directions, drawn underneath.
-            for dx, dy in ((-2, 0), (2, 0), (0, -2), (0, 2), (2, 2)):
-                draw.text((x + dx, y + dy), text, font=font, fill=(0, 0, 0, 90))
-        draw.text((x, y), text, font=font, fill=WHITE)
+            draw.text((x, y), text, font=font, fill=WHITE,
+                      stroke_width=stroke, stroke_fill=(0, 0, 0, 200))
+        else:
+            draw.text((x, y), text, font=font, fill=WHITE)
 
     y = _TEXT_PAD
     for line in name_lines:
@@ -530,6 +611,13 @@ class Cue:
     duration: float = 8.0
     has_timer: bool = False
     timer_duration: float = 0.0
+    # Applications: where discussion time is inserted, and what to cut.
+    pause_at: float = 0.0
+    cut_start: float = 0.0
+    cut_end: float = 0.0
+    # Overview card: the divisions listed under the takeaway.
+    items: list = field(default_factory=list)
+    kind: str = ""
 
 
 def schedule_cues(
@@ -560,7 +648,9 @@ def schedule_cues(
             continue  # the same point matched twice at the same moment
         cleaned.append(Cue(cue.text, start, cue.label,
                            cue.duration or default_duration,
-                           cue.has_timer, cue.timer_duration))
+                           cue.has_timer, cue.timer_duration,
+                           cue.pause_at, cue.cut_start, cue.cut_end,
+                           list(cue.items), cue.kind))
 
     scheduled: List[Cue] = []
     cursor = 0.0
@@ -591,7 +681,9 @@ def schedule_cues(
             continue
 
         scheduled.append(Cue(cue.text, round(start, 2), cue.label,
-                             round(duration, 2), cue.has_timer, cue.timer_duration))
+                             round(duration, 2), cue.has_timer, cue.timer_duration,
+                             cue.pause_at, cue.cut_start, cue.cut_end,
+                             list(cue.items), cue.kind))
         cursor = start + duration + gap
 
     return scheduled
@@ -637,6 +729,11 @@ def cues_from_matches(matches, default_duration: float = 8.0) -> List[Cue]:
                 duration=span if span > 0.05 else default_duration,
                 has_timer=has_timer,
                 timer_duration=timer_duration,
+                pause_at=float(getattr(match, "pause_at", 0.0) or 0.0),
+                cut_start=float(getattr(match, "cut_start", 0.0) or 0.0),
+                cut_end=float(getattr(match, "cut_end", 0.0) or 0.0),
+                items=list(getattr(match, "items", []) or []),
+                kind=kind,
             )
         )
     return cues
@@ -862,10 +959,14 @@ def _overlay_specs(
     card_style: str = "fullscreen",
     logo_path: Optional[str] = None,
     lower_third_shadow: bool = True,
+    countdown_on_source: bool = True,
 ) -> List[dict]:
     """
     Draw every overlay to a PNG on disk and return where and when each one
     belongs. Shared by both rendering paths.
+
+    countdown_on_source=False when discussion blocks are being inserted: the
+    countdown then lives in the block, not on the recording.
     """
     from PIL import Image as _Image
 
@@ -891,7 +992,12 @@ def _overlay_specs(
     for index, cue in enumerate(schedule_cues(cues, duration, cue_duration)):
         show_timer = bool(cue.has_timer and cue.timer_duration >= 1.0)
 
-        if card_style == "fullscreen":
+        if card_style == "fullscreen" and cue.items:
+            array = make_overview_card_image(
+                width, height, cue.text, cue.items, logo_path
+            )
+            x, y = 0, 0
+        elif card_style == "fullscreen":
             array = make_point_card_image(
                 width, height, cue.label, cue.text, logo_path,
                 reserve_bottom=TIMER_RESERVE if show_timer else 0.0,
@@ -910,7 +1016,7 @@ def _overlay_specs(
             "duration": round(cue.duration, 3),
         })
 
-        if not show_timer:
+        if not show_timer or not countdown_on_source:
             continue
 
         # The countdown runs at the END of the card: the question is read
@@ -946,9 +1052,14 @@ def _render_with_ffmpeg(
     progress_cb,
     force_audio_encode: bool = False,
     crf: int = 23,
+    src_start: float = 0.0,
+    src_end: Optional[float] = None,
 ) -> bool:
     """
     Fast path: hand the whole composite to FFmpeg in one pass.
+
+    src_start/src_end render only that stretch of the recording. Overlay
+    times in `specs` are absolute source times and are shifted here.
 
     FFmpeg does the layering in C and the original audio is copied through
     untouched, which is roughly twenty times quicker than decoding every frame
@@ -960,7 +1071,26 @@ def _render_with_ffmpeg(
 
     from transcriber import ffmpeg_exe
 
-    inputs: List[str] = ["-i", video_path]
+    # Keep only overlays that touch this stretch, clipped and shifted so
+    # their times are relative to it.
+    window_end = src_end if src_end is not None else float("inf")
+    local: List[dict] = []
+    for spec in specs:
+        s0 = spec["start"]; s1 = spec["start"] + spec["duration"]
+        a = max(s0, src_start); b = min(s1, window_end)
+        if b - a < 0.05:
+            continue
+        local.append({**spec, "start": a - src_start, "duration": b - a})
+    specs = local
+    if src_end is not None:
+        duration = src_end - src_start
+
+    inputs: List[str] = []
+    if src_start > 0:
+        inputs += ["-ss", f"{src_start:.3f}"]
+    if src_end is not None:
+        inputs += ["-t", f"{src_end - src_start:.3f}"]
+    inputs += ["-i", video_path]
     for spec in specs:
         inputs += ["-loop", "1", "-t", f"{spec['duration']:.3f}", "-i", spec["path"]]
 
@@ -1024,6 +1154,183 @@ def _render_with_ffmpeg(
             return True
 
     return False
+
+
+# --------------------------------------------------------------------------
+# Discussion blocks and the piece-by-piece timeline
+# --------------------------------------------------------------------------
+
+
+def plan_pieces(cues: Sequence[Cue], duration: float) -> List[dict]:
+    """
+    Decide the order of the finished video.
+
+    A stretch of the recording, then a discussion block, then the recording
+    again from wherever the speaker resumed — for every application that has
+    one. The speaker's own wait is what gets left out.
+
+        [{"kind": "source", "start": 0.0,   "end": 209.5},
+         {"kind": "pause",  "cue": <application>},
+         {"kind": "source", "start": 251.0, "end": 1392.0}]
+    """
+    pauses = sorted(
+        (c for c in cues if c.has_timer and c.timer_duration >= 1.0 and c.pause_at > 0),
+        key=lambda c: c.pause_at,
+    )
+    pieces: List[dict] = []
+    cursor = 0.0
+    for cue in pauses:
+        at = min(max(cue.pause_at, cursor), duration)
+        if at - cursor > 0.05:
+            pieces.append({"kind": "source", "start": cursor, "end": at})
+        pieces.append({"kind": "pause", "cue": cue})
+        resume = cue.cut_end if cue.cut_end > cue.cut_start else at
+        cursor = min(max(resume, at), duration)
+    if duration - cursor > 0.05:
+        pieces.append({"kind": "source", "start": cursor, "end": duration})
+    return pieces
+
+
+def _render_pause_block(
+    cue: Cue,
+    output_path: str,
+    width: int,
+    height: int,
+    fps: float,
+    preset: str,
+    crf: int,
+    threads: int,
+    workdir: str,
+    logo_path: Optional[str],
+    card_style: str,
+) -> bool:
+    """
+    The discussion block: the application card held for the agreed time,
+    with the countdown ticking beneath the question, over silence.
+    """
+    import subprocess
+
+    from PIL import Image as _Image
+    from transcriber import ffmpeg_exe
+
+    seconds = float(cue.timer_duration)
+    if card_style == "fullscreen":
+        base = make_point_card_image(
+            width, height, cue.label, cue.text, logo_path,
+            reserve_bottom=TIMER_RESERVE,
+        )
+    else:
+        base = np.zeros((height, width, 4), dtype=np.uint8)
+        base[:, :, 3] = 255
+    base_path = os.path.join(workdir, "pause_base.png")
+    _Image.fromarray(base).convert("RGB").save(base_path)
+
+    inputs = ["-loop", "1", "-t", f"{seconds:.3f}", "-i", base_path,
+              "-f", "lavfi", "-t", f"{seconds:.3f}",
+              "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]
+
+    # One overlay per countdown second, each enabled only for its own second.
+    filters: List[str] = [f"[0:v]fps={fps},format=rgba[base]"]
+    last = "base"
+    for index, (offset, remaining, length) in enumerate(timer_steps(seconds), start=2):
+        frame = make_timer_image(width, height, remaining,
+                                 on_card=(card_style == "fullscreen"))
+        frame_path = os.path.join(workdir, f"pause_timer_{index:04d}.png")
+        _Image.fromarray(frame).save(frame_path)
+        inputs += ["-loop", "1", "-t", f"{length:.3f}", "-i", frame_path]
+        x = int((width - frame.shape[1]) / 2)
+        y = int(height * TIMER_Y)
+        filters.append(f"[{index}:v]format=rgba,setpts=PTS+{offset:.3f}/TB[t{index}]")
+        filters.append(
+            f"[{last}][t{index}]overlay=x={x}:y={y}"
+            f":enable='between(t,{offset:.3f},{offset + length:.3f})'[v{index}]"
+        )
+        last = f"v{index}"
+    filters.append(f"[{last}]format=yuv420p[vout]")
+
+    result = subprocess.run([
+        ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error", *inputs,
+        "-filter_complex", ";".join(filters),
+        "-map", "[vout]", "-map", "1:a",
+        "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+        "-pix_fmt", "yuv420p", "-threads", str(threads),
+        "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2",
+        "-t", f"{seconds:.3f}", output_path,
+    ], capture_output=True, text=True)
+    if result.returncode != 0:
+        _last_error["pause_block"] = result.stderr[-600:]
+    return result.returncode == 0 and os.path.exists(output_path)
+
+
+# The most recent FFmpeg failure, for diagnosis.
+_last_error: dict = {}
+
+
+def _render_still_piece(
+    image_path: str, output_path: str, seconds: float,
+    width: int, height: int, fps: float, preset: str, crf: int, threads: int,
+) -> bool:
+    """An image held for `seconds` over silence, encoded like every other piece."""
+    import subprocess
+
+    from transcriber import ffmpeg_exe
+
+    result = subprocess.run([
+        ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error",
+        "-loop", "1", "-t", f"{seconds:.3f}", "-i", image_path,
+        "-f", "lavfi", "-t", f"{seconds:.3f}",
+        "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+        "-vf", (f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,"
+                f"setsar=1,fps={fps},format=yuv420p"),
+        "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+        "-pix_fmt", "yuv420p", "-threads", str(threads),
+        "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2",
+        "-shortest", output_path,
+    ], capture_output=True)
+    return result.returncode == 0 and os.path.exists(output_path)
+
+
+def _concat_pieces(paths: Sequence[str], output_path: str, preset: str,
+                   threads: int, crf: int) -> bool:
+    """Join encoded pieces. Stream copy first; re-encode only if it refuses."""
+    import subprocess
+    import tempfile as _tempfile
+
+    from transcriber import ffmpeg_exe
+
+    if len(paths) == 1:
+        import shutil as _shutil
+        _shutil.move(paths[0], output_path)
+        return True
+
+    listing = os.path.join(_tempfile.mkdtemp(prefix="bsve_join_"), "pieces.txt")
+    with open(listing, "w") as handle:
+        for item in paths:
+            handle.write(f"file '{os.path.abspath(item)}'\n")
+    joined = subprocess.run(
+        [ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error",
+         "-f", "concat", "-safe", "0", "-i", listing,
+         "-c", "copy", "-movflags", "+faststart", output_path],
+        capture_output=True,
+    )
+    if joined.returncode == 0 and os.path.exists(output_path):
+        return True
+
+    inputs: List[str] = []
+    for item in paths:
+        inputs += ["-i", item]
+    streams = "".join(f"[{i}:v][{i}:a]" for i in range(len(paths)))
+    redone = subprocess.run(
+        [ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error", *inputs,
+         "-filter_complex", f"{streams}concat=n={len(paths)}:v=1:a=1[v][a]",
+         "-map", "[v]", "-map", "[a]",
+         "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+         "-pix_fmt", "yuv420p", "-threads", str(threads),
+         "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", output_path],
+        capture_output=True,
+    )
+    return redone.returncode == 0 and os.path.exists(output_path)
 
 
 def render_video(
@@ -1094,36 +1401,89 @@ def render_video(
 
         workdir = _tempfile.mkdtemp(prefix="bsve_overlays_")
         try:
+            pieces = plan_pieces(cues, duration)
+            has_pauses = any(piece["kind"] == "pause" for piece in pieces)
+
             specs = _overlay_specs(
                 video_path, width, height, duration,
                 speaker_name, speaker_title, cues,
                 lower_third_start, lower_third_duration, cue_duration, workdir,
                 card_style=card_style, logo_path=logo_path,
                 lower_third_shadow=lower_third_shadow,
+                countdown_on_source=not has_pauses,
             )
 
-            # With bookends the overlays land in a scratch file first, then the
-            # three pieces are joined; without them we write straight to target.
-            body_path = (
-                os.path.join(workdir, "body.mp4") if has_bookends else output_path
-            )
-            if _render_with_ffmpeg(
-                video_path, body_path, specs, duration,
-                preset, threads, fade, progress_cb,
-                force_audio_encode=has_bookends, crf=crf,
-            ):
-                if not has_bookends:
-                    return output_path
-                if progress_cb:
-                    try:
-                        progress_cb(0.97, "Adding the intro and outro…")
-                    except Exception:
-                        pass
-                if _concat_bookends(
-                    body_path, output_path, intro_image_path, outro_image_path,
-                    width, height, fps, bookend_duration, preset, threads, crf,
+            if not has_pauses and not has_bookends:
+                # The simple case: one pass over the whole recording.
+                if _render_with_ffmpeg(
+                    video_path, output_path, specs, duration,
+                    preset, threads, fade, progress_cb, crf=crf,
                 ):
                     return output_path
+            else:
+                # Piece by piece: stretches of the recording, discussion
+                # blocks, and the bookends, each encoded identically and
+                # then joined without a second pass over the video.
+                rendered: List[str] = []
+                total = sum(
+                    (piece["end"] - piece["start"]) if piece["kind"] == "source"
+                    else piece["cue"].timer_duration
+                    for piece in pieces
+                )
+                done_so_far = [0.0]
+
+                def piece_progress(fraction: float, message: str, span: float):
+                    if progress_cb:
+                        try:
+                            progress_cb(
+                                min((done_so_far[0] + fraction * span) / max(total, 1), 0.97),
+                                "Rendering video…",
+                            )
+                        except Exception:
+                            pass
+
+                if intro_image_path and os.path.exists(intro_image_path):
+                    path = os.path.join(workdir, "piece_intro.mp4")
+                    if _render_still_piece(intro_image_path, path, bookend_duration,
+                                           width, height, fps, preset, crf, threads):
+                        rendered.append(path)
+
+                for index, piece in enumerate(pieces):
+                    path = os.path.join(workdir, f"piece_{index:03d}.mp4")
+                    if piece["kind"] == "source":
+                        span = piece["end"] - piece["start"]
+                        ok = _render_with_ffmpeg(
+                            video_path, path, specs, duration, preset, threads, fade,
+                            lambda f, m, span=span: piece_progress(f, m, span),
+                            force_audio_encode=True, crf=crf,
+                            src_start=piece["start"], src_end=piece["end"],
+                        )
+                        done_so_far[0] += span
+                    else:
+                        ok = _render_pause_block(
+                            piece["cue"], path, width, height, fps, preset, crf,
+                            threads, workdir, logo_path, card_style,
+                        )
+                        done_so_far[0] += piece["cue"].timer_duration
+                    if not ok:
+                        rendered = []
+                        break
+                    rendered.append(path)
+
+                if rendered and outro_image_path and os.path.exists(outro_image_path):
+                    path = os.path.join(workdir, "piece_outro.mp4")
+                    if _render_still_piece(outro_image_path, path, bookend_duration,
+                                           width, height, fps, preset, crf, threads):
+                        rendered.append(path)
+
+                if rendered:
+                    if progress_cb:
+                        try:
+                            progress_cb(0.98, "Joining the pieces…")
+                        except Exception:
+                            pass
+                    if _concat_pieces(rendered, output_path, preset, threads, crf):
+                        return output_path
         finally:
             _shutil.rmtree(workdir, ignore_errors=True)
 

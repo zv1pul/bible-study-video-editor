@@ -114,7 +114,21 @@ CATEGORIES = ["Takeaway", "Division", "Principle", "Application"]
 # --------------------------------------------------------------------------
 
 
-ELEMENT_TYPES = ["lower_third", "takeaway", "division", "principle", "application"]
+ELEMENT_TYPES = [
+    "lower_third", "overview", "takeaway", "division", "principle", "application",
+]
+
+# Discussion time inserted after every application question, in seconds.
+APPLICATION_PAUSE_SECONDS = 30.0
+# A gap in speech this long after a question is the speaker waiting, and is
+# what gets replaced by the fixed block above.
+APPLICATION_GAP_MIN = 6.0
+
+# How long a sentence stays up so it can be written down: this many seconds
+# per word, with a floor. A twelve-word principle gets about fourteen seconds.
+READ_SECONDS_PER_WORD = 0.9
+READ_MIN_SECONDS = 10.0
+READ_MAX_SECONDS = 45.0
 
 # How long the speaker-identification graphic runs. Fixed, not detected.
 LOWER_THIRD_START = 3.0
@@ -162,6 +176,17 @@ class Element:
     speaker_name: str = ""
     speaker_title: str = ""
 
+    # Applications: a fixed block of discussion time is inserted into the
+    # video at `pause_at` (source seconds), and the source between cut_start
+    # and cut_end — the speaker waiting — is removed so the video does not
+    # drag. Zero means no cut.
+    pause_at: float = 0.0
+    cut_start: float = 0.0
+    cut_end: float = 0.0
+
+    # Overview card: the divisions listed beneath the takeaway.
+    items: List[str] = field(default_factory=list)
+
     # Internal bookkeeping — never part of the exported JSON.
     id: str = ""
     confidence: float = 0.0
@@ -204,6 +229,12 @@ class Element:
             payload["timer_duration"] = (
                 int(round(self.timer_duration)) if self.has_timer else 0
             )
+            if self.pause_at:
+                payload["pause_at"] = round(self.pause_at, 2)
+            if self.cut_end > self.cut_start:
+                payload["cut"] = [round(self.cut_start, 2), round(self.cut_end, 2)]
+        if self.type == "overview":
+            payload["items"] = list(self.items)
         return payload
 
 
@@ -1375,57 +1406,140 @@ def _fallback_elements(
     return _sorted(elements)
 
 
-def apply_timer_detection(
+def _readable_seconds(text: str) -> float:
+    words = len((text or "").split())
+    return max(READ_MIN_SECONDS, min(READ_MAX_SECONDS, words * READ_SECONDS_PER_WORD + 3.0))
+
+
+def shape_timeline(
     elements: Sequence[Element],
     silences: Sequence[dict],
     duration: float,
-) -> List[str]:
+    *,
+    pause_seconds: float = APPLICATION_PAUSE_SECONDS,
+    read_seconds_per_word: float = READ_SECONDS_PER_WORD,
+    overview: bool = True,
+) -> tuple:
     """
-    Settle has_timer and timer_duration from the measured audio.
+    Turn the raw placements into the timeline the lesson actually wants.
 
-    The model is asked for these, but a pause is something you measure, not
-    something you read. Where the audio disagrees with the model, the audio
-    wins — and the correction is recorded so it shows up in the notes.
+    Three adjustments, each from a review of the first real render:
+
+    * The takeaway is said first and then the divisions are introduced, so
+      the takeaway and the divisions go on ONE card that stays up from just
+      before the takeaway until the first division begins — long enough to be
+      written down, rather than flashing past.
+
+    * Every application question is followed by a fixed block of discussion
+      time with a countdown. The speaker's own wait — however long it was —
+      is cut out of the video and replaced by that block, so the video moves
+      straight on to where they resume.
+
+    * Sentences stay up long enough to copy down: a floor, then so many
+      seconds per word.
+
+    Returns (elements, notes).
     """
     notes: List[str] = []
+    out: List[Element] = []
+    silences = list(silences or [])
+
+    # -- readable durations ---------------------------------------------------
     for element in elements:
+        if element.type in ("division", "principle"):
+            need = max(
+                READ_MIN_SECONDS,
+                min(READ_MAX_SECONDS,
+                    len(element.content.split()) * read_seconds_per_word + 3.0),
+            )
+            if element.duration < need:
+                element.end_time = element.start_time + need
+        out.append(element)
+
+    # -- the fixed pause after each application --------------------------------
+    for element in out:
         if element.type != "application":
             element.has_timer = False
             element.timer_duration = 0.0
             continue
 
-        # The question finishes somewhere around where the model put end_time;
-        # look for a long pause starting near there.
+        # Where does the question finish? The nearest real pause after the
+        # card begins is the speaker waiting; failing that, the model's end.
         anchor = element.end_time if element.end_time > element.start_time else element.start_time
-        silence = find_silence_after(
-            silences, anchor, within=12.0, min_duration=TIMER_MIN_SILENCE
+        gap = find_silence_after(
+            silences, anchor, within=15.0, min_duration=APPLICATION_GAP_MIN
+        ) or find_silence_after(
+            silences, element.start_time, within=90.0, min_duration=APPLICATION_GAP_MIN
         )
-        if silence is None and element.start_time:
-            # The model may have already stretched end_time over the pause, so
-            # try again from the start of the question.
-            silence = find_silence_after(
-                silences, element.start_time, within=90.0,
-                min_duration=TIMER_MIN_SILENCE,
-            )
 
-        if silence:
-            element.has_timer = True
-            element.timer_duration = float(silence["duration"])
-            element.end_time = float(silence["end"])
+        if gap:
+            element.pause_at = float(gap["start"])
+            element.cut_start = float(gap["start"])
+            element.cut_end = float(gap["end"])
             element.notes.append(
-                f"Reflection pause measured: {silence['duration']:.0f}s "
-                f"({format_timestamp(silence['start'])}–"
-                f"{format_timestamp(silence['end'])})."
+                f"The speaker's {gap['duration']:.0f}s wait is replaced by "
+                f"{pause_seconds:.0f}s of discussion time."
             )
         else:
-            if element.has_timer:
-                notes.append(
-                    f'"{element.content[:40]}" was reported as having a '
-                    "reflection pause, but no silence of "
-                    f"{TIMER_MIN_SILENCE:.0f}s or more was found in the audio."
-                )
-            element.has_timer = False
-            element.timer_duration = 0.0
+            element.pause_at = float(anchor)
+            element.notes.append(
+                f"No pause was found after the question, so {pause_seconds:.0f}s "
+                "of discussion time is inserted where it ends."
+            )
+
+        # The card runs on the source until the pause; the block carries it on.
+        element.end_time = element.pause_at
+        element.has_timer = True
+        element.timer_duration = float(pause_seconds)
+
+    # -- takeaway + divisions on one card ---------------------------------------
+    if overview:
+        takeaways = [e for e in out if e.type == "takeaway"]
+        divisions = sorted((e for e in out if e.type == "division"),
+                           key=lambda e: e.start_time)
+        if takeaways:
+            takeaway = takeaways[0]
+            first_division = next(
+                (d for d in divisions if d.start_time > takeaway.start_time), None
+            )
+            if first_division:
+                # Up to the moment the first division is introduced, however
+                # long or short that turns out to be.
+                end = first_division.start_time
+            else:
+                end = max(takeaway.end_time,
+                          takeaway.start_time + READ_MIN_SECONDS)
+            card = Element(
+                type="overview",
+                header="Takeaway",
+                content=takeaway.content,
+                items=[d.content for d in divisions],
+                start_time=max(takeaway.start_time - 1.0, 0.0),  # just before
+                end_time=end,
+                id="overview",
+                confidence=takeaway.confidence,
+                evidence=takeaway.evidence,
+                source=takeaway.source,
+            )
+            out = [e for e in out if e.type != "takeaway"] + [card]
+            notes.append(
+                "The takeaway and divisions share one card from "
+                f"{format_timestamp(card.start_time)} to {format_timestamp(end)}."
+            )
+
+    # -- nothing runs into whatever comes next --------------------------------
+    ordered = _sorted([e for e in out if e.type != "lower_third"])
+    for earlier, later in zip(ordered, ordered[1:]):
+        if earlier.end_time > later.start_time - 0.2:
+            earlier.end_time = max(later.start_time - 0.2,
+                                   earlier.start_time + 1.0)
+
+    return _sorted(out), notes
+
+
+# Kept so older calls still work; the new shaping supersedes it.
+def apply_timer_detection(elements, silences, duration):
+    _, notes = shape_timeline(elements, silences, duration)
     return notes
 
 
@@ -1552,6 +1666,8 @@ def match_lesson_points(
     include_lower_third: bool = True,
     other_keys: Optional[Dict[str, str]] = None,
     use_cache: bool = True,
+    pause_seconds: float = APPLICATION_PAUSE_SECONDS,
+    overview_card: bool = True,
     progress_cb=None,
 ) -> tuple:
     """
@@ -1566,7 +1682,12 @@ def match_lesson_points(
     silences = list(silences or [])
 
     def finish(elements: List[Element], model_used: str) -> tuple:
-        notes.extend(apply_timer_detection(elements, silences, duration))
+        elements = _clamp_elements(elements, duration)
+        elements, shape_notes = shape_timeline(
+            elements, silences, duration,
+            pause_seconds=pause_seconds, overview=overview_card,
+        )
+        notes.extend(shape_notes)
         elements = _clamp_elements(elements, duration)
         if include_lower_third and (speaker.strip() or speaker_title.strip()):
             elements = [lower_third_element(speaker, speaker_title)] + elements
@@ -1765,7 +1886,8 @@ def _clamp_elements(elements: List[Element], duration: float) -> List[Element]:
             element.start_time = min(element.start_time, max(limit - 0.5, 0.0))
 
         if element.end_time <= element.start_time:
-            element.notes.append("No usable end time was given; used a default length.")
+            if element.type != "lower_third":
+                element.notes.append("No usable end time was given; used a default length.")
             element.end_time = element.start_time + 8.0
         if element.duration < MIN_ELEMENT_SECONDS:
             element.notes.append(
