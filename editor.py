@@ -668,7 +668,7 @@ def schedule_cues(
     video_duration: float,
     default_duration: float = 8.0,
     min_duration: float = 2.0,
-    gap: float = 0.2,
+    gap: float = 0.0,
 ) -> List[Cue]:
     """
     Turn the requested cue times into a clean, non-overlapping schedule.
@@ -1034,6 +1034,12 @@ def _overlay_specs(
 
     for index, cue in enumerate(schedule_cues(cues, duration, cue_duration)):
         show_timer = bool(cue.has_timer and cue.timer_duration >= 1.0)
+        if show_timer and cue.pause_at > cue.start and not countdown_on_source:
+            # The card must run right up to the discussion block with no
+            # frame of video showing between them.
+            cue = Cue(cue.text, cue.start, cue.label, cue.pause_at - cue.start,
+                      cue.has_timer, cue.timer_duration, cue.pause_at,
+                      cue.cut_start, cue.cut_end, list(cue.items), cue.kind)
 
         if card_style == "fullscreen" and cue.items:
             array = make_overview_card_image(

@@ -130,6 +130,9 @@ READ_SECONDS_PER_WORD = 0.9
 READ_MIN_SECONDS = 10.0
 READ_MAX_SECONDS = 45.0
 
+# Two cards closer than this are joined edge to edge; no bare video between.
+CLOSE_GAP_SECONDS = 4.0
+
 # How long the speaker-identification graphic runs. Fixed, not detected.
 LOWER_THIRD_START = 3.0
 LOWER_THIRD_END = 28.0
@@ -1527,12 +1530,28 @@ def shape_timeline(
                 f"{format_timestamp(card.start_time)} to {format_timestamp(end)}."
             )
 
-    # -- nothing runs into whatever comes next --------------------------------
+    # -- the card after a discussion block starts as the speaker resumes -------
+    # Otherwise a second or two of the speaker saying "welcome back" shows
+    # between the block ending and the next card, which reads as a cut.
+    for element in out:
+        if element.type == "application" and element.cut_end > element.cut_start:
+            following = [e for e in out if e.start_time >= element.cut_end
+                         and e.type not in ("lower_third", "application")]
+            if following:
+                nxt = min(following, key=lambda e: e.start_time)
+                if nxt.start_time - element.cut_end < CLOSE_GAP_SECONDS:
+                    nxt.start_time = element.cut_end
+
+    # -- no slivers of bare video between cards --------------------------------
+    # A card that ends within a few seconds of the next one beginning is
+    # extended to meet it exactly. Otherwise a fraction of a second of the
+    # speaker flashes past between them, which reads as a cut. A longer gap
+    # is genuine — the speaker explaining — and the video shows through.
     ordered = _sorted([e for e in out if e.type != "lower_third"])
     for earlier, later in zip(ordered, ordered[1:]):
-        if earlier.end_time > later.start_time - 0.2:
-            earlier.end_time = max(later.start_time - 0.2,
-                                   earlier.start_time + 1.0)
+        gap = later.start_time - earlier.end_time
+        if gap < CLOSE_GAP_SECONDS:
+            earlier.end_time = max(later.start_time, earlier.start_time + 1.0)
 
     return _sorted(out), notes
 
