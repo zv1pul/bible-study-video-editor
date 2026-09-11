@@ -3,16 +3,20 @@ Bible Study Video Editor — how to install
 
 1.  Drag "Bible Study Video Editor" into your Applications folder.
 
-2.  THE FIRST TIME ONLY, open it like this:
+2.  THE FIRST TIME ONLY, macOS will refuse to open it. That is expected —
+    it blocks any app that was not bought from the App Store. Do this once:
 
-        RIGHT-CLICK the app  ->  choose "Open"  ->  click "Open" again
+        a) Double-click the app. A message says it "was not opened" or
+           "cannot be verified". Click "Done".
+        b) Open System Settings  ->  Privacy & Security  ->  scroll down
+           to the Security section. You will see the app's name with an
+           "Open Anyway" button. Click it (do this within an hour of
+           step a, or repeat step a).
+        c) Enter your Mac password when asked, then click "Open".
 
-    Do not double-click it the first time. macOS blocks apps that were not
-    bought from the App Store until you open one this way once. You will see
-    a warning saying the developer cannot be verified — that is expected,
-    and clicking "Open" is what tells macOS you trust it.
-
-    After that first time, double-clicking works normally, forever.
+    After that, double-clicking works normally, forever.
+    (On older Macs — macOS 14 or earlier — right-click the app and choose
+    "Open" instead; that does the same thing.)
 
 3.  The app opens in your web browser. That is normal — it runs entirely on
     your own computer and nothing is uploaded anywhere.
