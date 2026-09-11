@@ -64,8 +64,13 @@ LOWER_THIRD_TITLE_PT = 34.0
 _TEXT_PAD = 4                         # internal padding that leaves room for the halo
 
 # --- Countdown timer -------------------------------------------------------
-TIMER_Y = 0.79                        # fraction of frame height, its top edge
-TIMER_RESERVE = 0.20                  # room kept clear under the body text
+# A ring that drains clockwise from the top, with the digits inside it.
+# Sizes are quoted at 1080p and scaled.
+TIMER_FONT_PT = 76.0
+TIMER_RING_DIAMETER = 224.0
+TIMER_RING_WIDTH = 10.0
+TIMER_Y = 0.70                        # fraction of frame height, its top edge
+TIMER_RESERVE = 0.30                  # room kept clear under the body text
 TIMER_MAX_STEPS = 240                 # ceiling on how many second-frames we draw
 
 # Encoder settings, measured on a real 1080p lesson (1324 kb/s source):
@@ -390,10 +395,17 @@ def lower_third_position(video_w: int, video_h: int, image_height: int) -> tuple
     return max(x, 0), max(y, 0)
 
 
-def format_countdown(seconds: float) -> str:
-    """`MM:SS`, never negative."""
+def format_countdown(seconds: float, total: float = 0.0) -> str:
+    """
+    Plain seconds for a short countdown ("30"), M:SS for a long one ("2:30").
+
+    A thirty-second discussion timer reads better as a single number inside
+    a ring than as 00:30, and it fits.
+    """
     seconds = max(0, int(round(seconds)))
-    return f"{seconds // 60:02d}:{seconds % 60:02d}"
+    if max(total, seconds) < 100:
+        return str(seconds)
+    return f"{seconds // 60}:{seconds % 60:02d}"
 
 
 def make_timer_image(
@@ -402,29 +414,60 @@ def make_timer_image(
     seconds_remaining: float,
     *,
     on_card: bool = True,
+    total: float = 0.0,
 ) -> np.ndarray:
     """
-    One frame of the reflection countdown: a clean MM:SS.
+    One frame of the countdown: MM:SS inside a ring that empties as time runs.
 
-    Drawn on transparent background so it can sit over the beige card (black
-    text) or straight over the footage (white text with a halo, since there is
-    no telling what is behind it).
+    The ring starts full at the top and drains clockwise, so a glance at the
+    shape says how much is left without reading the digits. Drawn at four
+    times the size and scaled down, which is what keeps the curve smooth.
+
+    `total` is the length of the whole countdown; without it there is no ring,
+    just the digits.
     """
-    font = load_font(video_h * 0.078, bold=True)
-    text = format_countdown(seconds_remaining)
+    scale = video_h / REFERENCE_HEIGHT
+    font = load_font(TIMER_FONT_PT * scale, bold=True)
+    text = format_countdown(seconds_remaining, total)
 
-    width = int(_text_width(text, font)) + 24
-    height = int(font.size * 1.45)
-    img = Image.new("RGBA", (max(width, 1), max(height, 1)), (0, 0, 0, 0))
+    diameter = int(TIMER_RING_DIAMETER * scale)
+    ring = max(2, int(TIMER_RING_WIDTH * scale))
+    pad = ring + 2
+    size = diameter + 2 * pad
+
+    if on_card:
+        ink = CARD_TEXT
+        track = (CARD_TEXT[0], CARD_TEXT[1], CARD_TEXT[2], 38)     # faint
+    else:
+        ink = WHITE
+        track = (255, 255, 255, 70)
+
+    # Supersample for anti-aliasing.
+    ss = 4
+    big = Image.new("RGBA", (size * ss, size * ss), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(big)
+    box = [pad * ss, pad * ss, (pad + diameter) * ss, (pad + diameter) * ss]
+
+    if total > 0:
+        # The full track, faint, so the drained part still reads as a circle.
+        draw.arc(box, start=0, end=360, fill=track, width=ring * ss)
+        fraction = max(0.0, min(1.0, seconds_remaining / total))
+        if fraction > 0.002:
+            # Pillow measures angles clockwise from 3 o'clock. The gap opens
+            # at 12 and grows clockwise, so the remainder is the arc that
+            # finishes back at 12.
+            draw.arc(box, start=-90 + 360 * (1 - fraction), end=270,
+                     fill=ink, width=ring * ss)
+
+    img = big.resize((size, size), Image.LANCZOS)
     draw = ImageDraw.Draw(img)
 
-    x = (width - _text_width(text, font)) / 2
-    if on_card:
-        draw.text((x, 4), text, font=font, fill=CARD_TEXT)
-    else:
-        for dx, dy in ((-2, 0), (2, 0), (0, -2), (0, 2), (2, 2)):
-            draw.text((x + dx, 4 + dy), text, font=font, fill=(0, 0, 0, 110))
-        draw.text((x, 4), text, font=font, fill=WHITE)
+    # Digits, centred in the ring.
+    left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
+    tw, th = right - left, bottom - top
+    draw.text(((size - tw) / 2 - left, (size - th) / 2 - top), text,
+              font=font, fill=ink)
+
     return np.array(img)
 
 
@@ -1026,7 +1069,8 @@ def _overlay_specs(
             timer_steps(min(cue.timer_duration, cue.duration))
         ):
             frame = make_timer_image(
-                width, height, remaining, on_card=(card_style == "fullscreen")
+                width, height, remaining, on_card=(card_style == "fullscreen"),
+                total=min(cue.timer_duration, cue.duration),
             )
             frame_path = os.path.join(workdir, f"ov_timer_{index:03d}_{step:04d}.png")
             _Image.fromarray(frame).save(frame_path)
@@ -1234,7 +1278,8 @@ def _render_pause_block(
     last = "base"
     for index, (offset, remaining, length) in enumerate(timer_steps(seconds), start=2):
         frame = make_timer_image(width, height, remaining,
-                                 on_card=(card_style == "fullscreen"))
+                                 on_card=(card_style == "fullscreen"),
+                                 total=seconds)
         frame_path = os.path.join(workdir, f"pause_timer_{index:04d}.png")
         _Image.fromarray(frame).save(frame_path)
         inputs += ["-loop", "1", "-t", f"{length:.3f}", "-i", frame_path]
