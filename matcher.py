@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from difflib import SequenceMatcher
 from typing import Dict, List, Optional, Sequence
 
@@ -132,6 +132,8 @@ READ_MAX_SECONDS = 45.0
 
 # Two cards closer than this are joined edge to edge; no bare video between.
 CLOSE_GAP_SECONDS = 4.0
+# A division is a heading, quicker to copy than a full sentence.
+DIVISION_MIN_SECONDS = 8.0
 
 # How long the speaker-identification graphic runs. Fixed, not detected.
 LOWER_THIRD_START = 3.0
@@ -1414,67 +1416,32 @@ def _readable_seconds(text: str) -> float:
     return max(READ_MIN_SECONDS, min(READ_MAX_SECONDS, words * READ_SECONDS_PER_WORD + 3.0))
 
 
-def shape_timeline(
+def detect_pauses(
     elements: Sequence[Element],
     silences: Sequence[dict],
-    duration: float,
-    *,
     pause_seconds: float = APPLICATION_PAUSE_SECONDS,
-    read_seconds_per_word: float = READ_SECONDS_PER_WORD,
-    overview: bool = True,
-) -> tuple:
+) -> List[str]:
     """
-    Turn the raw placements into the timeline the lesson actually wants.
+    For every application, find the speaker's wait and plan the block.
 
-    Three adjustments, each from a review of the first real render:
-
-    * The takeaway is said first and then the divisions are introduced, so
-      the takeaway and the divisions go on ONE card that stays up from just
-      before the takeaway until the first division begins — long enough to be
-      written down, rather than flashing past.
-
-    * Every application question is followed by a fixed block of discussion
-      time with a countdown. The speaker's own wait — however long it was —
-      is cut out of the video and replaced by that block, so the video moves
-      straight on to where they resume.
-
-    * Sentences stay up long enough to copy down: a floor, then so many
-      seconds per word.
-
-    Returns (elements, notes).
+    Records where the discussion block goes (pause_at) and what stretch of
+    the recording it replaces (cut_start..cut_end). These are facts about the
+    audio and do not move; the layout step may slide pause_at later, but only
+    within the wait.
     """
     notes: List[str] = []
-    out: List[Element] = []
     silences = list(silences or [])
-
-    # -- readable durations ---------------------------------------------------
     for element in elements:
-        if element.type in ("division", "principle"):
-            need = max(
-                READ_MIN_SECONDS,
-                min(READ_MAX_SECONDS,
-                    len(element.content.split()) * read_seconds_per_word + 3.0),
-            )
-            if element.duration < need:
-                element.end_time = element.start_time + need
-        out.append(element)
-
-    # -- the fixed pause after each application --------------------------------
-    for element in out:
         if element.type != "application":
             element.has_timer = False
             element.timer_duration = 0.0
             continue
-
-        # Where does the question finish? The nearest real pause after the
-        # card begins is the speaker waiting; failing that, the model's end.
         anchor = element.end_time if element.end_time > element.start_time else element.start_time
         gap = find_silence_after(
             silences, anchor, within=15.0, min_duration=APPLICATION_GAP_MIN
         ) or find_silence_after(
             silences, element.start_time, within=90.0, min_duration=APPLICATION_GAP_MIN
         )
-
         if gap:
             element.pause_at = float(gap["start"])
             element.cut_start = float(gap["start"])
@@ -1489,14 +1456,39 @@ def shape_timeline(
                 f"No pause was found after the question, so {pause_seconds:.0f}s "
                 "of discussion time is inserted where it ends."
             )
-
-        # The card runs on the source until the pause; the block carries it on.
         element.end_time = element.pause_at
         element.has_timer = True
         element.timer_duration = float(pause_seconds)
+    return notes
+
+
+def layout_timeline(
+    elements: Sequence[Element],
+    duration: float,
+    *,
+    overview: bool = True,
+    read_seconds_per_word: float = READ_SECONDS_PER_WORD,
+) -> tuple:
+    """
+    Lay the cards out on the timeline. The LAST step, after verification.
+
+    * The takeaway and the divisions share one card, shown from just before
+      the takeaway until the first division is introduced.
+    * Cards never overlap. Each holds at least its readable time; when the
+      speaker outruns that, the later card waits its turn. An application's
+      discussion block slides later to match — into the speaker's own wait,
+      which is silence, so nothing is lost.
+    * Cards closer than a few seconds meet edge to edge, so no sliver of bare
+      video flashes between them.
+    * A recording too short for all of that shares the time out fairly.
+
+    Returns (elements, notes).
+    """
+    notes: List[str] = []
+    out: List[Element] = [replace(e, notes=list(e.notes)) for e in elements]
 
     # -- takeaway + divisions on one card ---------------------------------------
-    if overview:
+    if overview and not any(e.type == "overview" for e in out):
         takeaways = [e for e in out if e.type == "takeaway"]
         divisions = sorted((e for e in out if e.type == "division"),
                            key=lambda e: e.start_time)
@@ -1505,24 +1497,14 @@ def shape_timeline(
             first_division = next(
                 (d for d in divisions if d.start_time > takeaway.start_time), None
             )
-            if first_division:
-                # Up to the moment the first division is introduced, however
-                # long or short that turns out to be.
-                end = first_division.start_time
-            else:
-                end = max(takeaway.end_time,
-                          takeaway.start_time + READ_MIN_SECONDS)
-            card = Element(
-                type="overview",
-                header="Takeaway",
-                content=takeaway.content,
+            end = first_division.start_time if first_division else max(
+                takeaway.end_time, takeaway.start_time + READ_MIN_SECONDS)
+            card = replace(
+                takeaway,
+                type="overview", header="Takeaway",
                 items=[d.content for d in divisions],
-                start_time=max(takeaway.start_time - 1.0, 0.0),  # just before
-                end_time=end,
-                id="overview",
-                confidence=takeaway.confidence,
-                evidence=takeaway.evidence,
-                source=takeaway.source,
+                start_time=max(takeaway.start_time - 1.0, 0.0),
+                end_time=end, id="overview",
             )
             out = [e for e in out if e.type != "takeaway"] + [card]
             notes.append(
@@ -1530,30 +1512,79 @@ def shape_timeline(
                 f"{format_timestamp(card.start_time)} to {format_timestamp(end)}."
             )
 
-    # -- the card after a discussion block starts as the speaker resumes -------
-    # Otherwise a second or two of the speaker saying "welcome back" shows
-    # between the block ending and the next card, which reads as a cut.
-    for element in out:
-        if element.type == "application" and element.cut_end > element.cut_start:
-            following = [e for e in out if e.start_time >= element.cut_end
-                         and e.type not in ("lower_third", "application")]
-            if following:
-                nxt = min(following, key=lambda e: e.start_time)
-                if nxt.start_time - element.cut_end < CLOSE_GAP_SECONDS:
-                    nxt.start_time = element.cut_end
+    # -- the queue ---------------------------------------------------------------
+    cards = _sorted([e for e in out if e.type != "lower_third"])
+    others = [e for e in out if e.type == "lower_third"]
+
+    def readable(card: Element) -> float:
+        if card.type == "division":
+            return max(DIVISION_MIN_SECONDS,
+                       min(READ_MAX_SECONDS, len(card.content.split()) * read_seconds_per_word + 3.0))
+        if card.type == "application":
+            return max(3.0, min(12.0, _readable_seconds(card.content)))
+        return max(READ_MIN_SECONDS,
+                   min(READ_MAX_SECONDS, len(card.content.split()) * read_seconds_per_word + 3.0))
+
+    cursor = 0.0
+    for index, card in enumerate(cards):
+        if card.start_time < cursor:
+            card.start_time = cursor
+
+        # Share what is left fairly if the recording is running out.
+        remaining_cards = len(cards) - index
+        room = max(duration - card.start_time, 0.0) if duration else float("inf")
+        need = max(card.end_time - card.start_time, readable(card))
+        if duration and need * remaining_cards > room:
+            need = max(1.0, room / remaining_cards)
+        card.end_time = card.start_time + need
+
+        if card.type == "application" and card.has_timer:
+            earliest = card.start_time + readable(card)
+            if card.pause_at < earliest:
+                if card.cut_end > card.cut_start:
+                    card.pause_at = min(earliest, card.cut_end - 1.0)
+                    card.cut_start = card.pause_at
+                else:
+                    card.pause_at = min(earliest, duration) if duration else earliest
+            card.end_time = card.pause_at
+            cursor = card.cut_end if card.cut_end > card.cut_start else card.pause_at
+        else:
+            cursor = card.end_time
 
     # -- no slivers of bare video between cards --------------------------------
-    # A card that ends within a few seconds of the next one beginning is
-    # extended to meet it exactly. Otherwise a fraction of a second of the
-    # speaker flashes past between them, which reads as a cut. A longer gap
-    # is genuine — the speaker explaining — and the video shows through.
-    ordered = _sorted([e for e in out if e.type != "lower_third"])
-    for earlier, later in zip(ordered, ordered[1:]):
+    for earlier, later in zip(cards, cards[1:]):
+        if earlier.type == "application" and earlier.has_timer:
+            continue
         gap = later.start_time - earlier.end_time
-        if gap < CLOSE_GAP_SECONDS:
-            earlier.end_time = max(later.start_time, earlier.start_time + 1.0)
+        if 0 <= gap < CLOSE_GAP_SECONDS:
+            earlier.end_time = later.start_time
 
-    return _sorted(out), notes
+    # -- the card after a block starts as the speaker resumes -----------------
+    for card in cards:
+        if card.type == "application" and card.has_timer:
+            resume = card.cut_end if card.cut_end > card.cut_start else card.pause_at
+            following = [e for e in cards if e is not card and e.start_time >= resume - 0.01]
+            if following:
+                nxt = min(following, key=lambda e: e.start_time)
+                if 0 <= nxt.start_time - resume < CLOSE_GAP_SECONDS:
+                    nxt.start_time = resume
+
+    # -- inside the recording ------------------------------------------------------
+    if duration:
+        for card in cards:
+            card.start_time = max(0.0, min(card.start_time, duration))
+            card.end_time = max(card.start_time + 0.5, min(card.end_time, duration))
+
+    return _sorted(cards + others), notes
+
+
+def shape_timeline(elements, silences, duration, *, pause_seconds=APPLICATION_PAUSE_SECONDS,
+                   read_seconds_per_word=READ_SECONDS_PER_WORD, overview=True):
+    """Detect pauses then lay out — for scripts that want both in one call."""
+    notes = detect_pauses(elements, silences, pause_seconds)
+    out, more = layout_timeline(elements, duration, overview=overview,
+                                read_seconds_per_word=read_seconds_per_word)
+    return out, notes + more
 
 
 # Kept so older calls still work; the new shaping supersedes it.
@@ -1702,12 +1733,11 @@ def match_lesson_points(
 
     def finish(elements: List[Element], model_used: str) -> tuple:
         elements = _clamp_elements(elements, duration)
-        elements, shape_notes = shape_timeline(
-            elements, silences, duration,
-            pause_seconds=pause_seconds, overview=overview_card,
-        )
-        notes.extend(shape_notes)
-        elements = _clamp_elements(elements, duration)
+        # Pauses are detected here, because they are facts about the audio.
+        # Laying the cards out is done AFTER verification — see layout_timeline
+        # — because verification snaps start times, and the layout must be the
+        # last thing to touch them.
+        notes.extend(detect_pauses(elements, silences, pause_seconds))
         if include_lower_third and (speaker.strip() or speaker_title.strip()):
             elements = [lower_third_element(speaker, speaker_title)] + elements
         return elements, notes, model_used

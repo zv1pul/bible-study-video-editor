@@ -387,6 +387,47 @@ def _check_collisions(verdicts: List[Verdict]) -> None:
                     verdict.verdict = REVIEW
 
 
+def lay_out(
+    verdicts: Sequence[Verdict],
+    duration: float,
+    *,
+    overview: bool = True,
+) -> List[Verdict]:
+    """
+    The final step: lay the verified cards out on the timeline.
+
+    Verification snaps start times, so layout must come after it, not
+    before. Each laid-out card keeps the verdict of the element it came
+    from; the overview card inherits the takeaway's.
+    """
+    from matcher import layout_timeline
+
+    by_id = {v.match.id: v for v in verdicts}
+
+    # Only cards that will actually be shown take part in the layout. A
+    # rejected card — a point the speaker never made — must not occupy the
+    # timeline and push real cards around; it is kept, unlaid, for the table.
+    shown = [v for v in verdicts if v.verdict != REJECTED]
+    hidden = [v for v in verdicts if v.verdict == REJECTED]
+
+    elements, _notes = layout_timeline(
+        [v.match for v in shown], duration, overview=overview
+    )
+    out: List[Verdict] = list(hidden)
+    for element in elements:
+        source = by_id.get(element.id) or (
+            by_id.get("takeaway_1") if element.type == "overview" else None
+        )
+        if source is None:
+            source = next((v for v in verdicts if v.match.type == "takeaway"), None)
+        if source is None:
+            out.append(Verdict(match=element, verdict=REVIEW, score=0.5,
+                               reasons=["Laid out without a verified source."]))
+            continue
+        out.append(replace(source, match=element))
+    return out
+
+
 def summarise(verdicts: Sequence[Verdict]) -> dict:
     counts = {VERIFIED: 0, REVIEW: 0, REJECTED: 0}
     for verdict in verdicts:

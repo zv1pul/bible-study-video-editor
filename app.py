@@ -875,6 +875,8 @@ if st.button("🔍 Analyse recording", type="primary", disabled=not ready, width
             verdicts = verifier.verify_matches(
                 matches, points, segments, video_duration, second_opinion=second
             )
+            # Layout is last: verification may have moved start times.
+            verdicts = verifier.lay_out(verdicts, video_duration, overview=overview_card)
             st.session_state.matches = [v.match for v in verdicts]
             st.session_state.verdicts = verdicts
             st.session_state.notes = notes
