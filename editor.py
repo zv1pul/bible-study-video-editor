@@ -199,6 +199,19 @@ def font_report() -> str:
 _MEASURE = ImageDraw.Draw(Image.new("RGBA", (4, 4)))
 
 
+def design_height(video_w: int, video_h: int) -> int:
+    """
+    The height to size type from.
+
+    On a landscape frame that is the frame height. On a portrait phone
+    recording the height is the LONG side, and type sized from it comes out
+    twice as big as the frame is wide — headers clipped, bodies wrapping two
+    words to a line. So use whichever is smaller: the height, or the height a
+    16:9 frame of this width would have.
+    """
+    return int(min(video_h, video_w * 9 / 16))
+
+
 def _text_width(text: str, font) -> float:
     return _MEASURE.textlength(text, font=font)
 
@@ -311,14 +324,16 @@ def make_point_card_image(
     """
     # Proportions taken from the reference card: a large, heavy header and a
     # body only a little smaller, both filling the frame confidently.
-    header_font = load_font(video_h * CARD_HEADER_SCALE, bold=True)
-    body_font = load_font(video_h * CARD_BODY_SCALE, bold=False)
+    dh = design_height(video_w, video_h)
+    header_font = load_font(dh * CARD_HEADER_SCALE, bold=True)
+    body_font = load_font(dh * CARD_BODY_SCALE, bold=False)
 
     img = Image.new("RGBA", (video_w, video_h), CARD_BG)
     draw = ImageDraw.Draw(img)
 
     # Reserved logo square, top right. Filled only if a logo was supplied;
     # otherwise it simply stays empty so nothing collides with it later.
+    logo_box = int(logo_box * dh / REFERENCE_HEIGHT)
     if logo_path and os.path.exists(logo_path):
         try:
             logo = Image.open(logo_path).convert("RGBA")
@@ -388,7 +403,7 @@ def lower_third_position(video_w: int, video_h: int, image_height: int) -> tuple
     The internal padding is subtracted so the glyphs themselves land on the
     inset rather than the transparent border around them.
     """
-    scale = video_h / REFERENCE_HEIGHT
+    scale = design_height(video_w, video_h) / REFERENCE_HEIGHT
     inset = LOWER_THIRD_INSET * scale
     x = int(round(inset)) - _TEXT_PAD
     y = int(round(video_h - inset - image_height)) + _TEXT_PAD
@@ -426,7 +441,7 @@ def make_timer_image(
     `total` is the length of the whole countdown; without it there is no ring,
     just the digits.
     """
-    scale = video_h / REFERENCE_HEIGHT
+    scale = design_height(video_w, video_h) / REFERENCE_HEIGHT
     font = load_font(TIMER_FONT_PT * scale, bold=True)
     text = format_countdown(seconds_remaining, total)
 
@@ -509,10 +524,11 @@ def make_overview_card_image(
     long enough to be written down, which a card that flashed for eight
     seconds never was.
     """
-    header_font = load_font(video_h * CARD_HEADER_SCALE * 0.78, bold=True)
-    body_font = load_font(video_h * CARD_BODY_SCALE * 0.86, bold=False)
-    sub_font = load_font(video_h * CARD_HEADER_SCALE * 0.52, bold=True)
-    list_font = load_font(video_h * CARD_BODY_SCALE * 0.66, bold=False)
+    dh = design_height(video_w, video_h)
+    header_font = load_font(dh * CARD_HEADER_SCALE * 0.78, bold=True)
+    body_font = load_font(dh * CARD_BODY_SCALE * 0.86, bold=False)
+    sub_font = load_font(dh * CARD_HEADER_SCALE * 0.52, bold=True)
+    list_font = load_font(dh * CARD_BODY_SCALE * 0.66, bold=False)
 
     img = Image.new("RGBA", (video_w, video_h), CARD_BG)
     draw = ImageDraw.Draw(img)
@@ -589,7 +605,7 @@ def make_lower_third_image(
     speaker is lit against a bright wall or a window. Pass shadow=False for
     text with nothing at all behind it.
     """
-    scale = video_h / REFERENCE_HEIGHT
+    scale = design_height(video_w, video_h) / REFERENCE_HEIGHT
     name_font = load_font(LOWER_THIRD_NAME_PT * scale, bold=True)
     title_font = load_font(LOWER_THIRD_TITLE_PT * scale, bold=False)
 
