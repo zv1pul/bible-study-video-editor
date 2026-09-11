@@ -47,6 +47,7 @@ DEFAULTS = {
     "segments": None,
     "silences": None,
     "fetched_path": None,
+    "analysed_fingerprint": None,
     "matches": None,
     "verdicts": None,
     "notes": [],
@@ -208,132 +209,8 @@ def secret(name: str) -> str:
 with st.sidebar:
     st.header("⚙️ Settings")
 
-    st.subheader("AI matching")
-    provider = st.selectbox(
-        "Provider",
-        options=list(matcher.PROVIDERS.keys()),
-        format_func=lambda key: matcher.PROVIDERS[key]["label"],
-        help="Both have free tiers. Gemini is the most generous.",
-    )
-    provider_info = matcher.PROVIDERS[provider]
-    default_key = secret("GEMINI_API_KEY" if provider == "gemini" else "GROQ_API_KEY")
-    llm_api_key = st.text_input(
-        "API key",
-        value=default_key,
-        type="password",
-        help=f"Free key: {provider_info['key_url']}",
-    )
-    llm_model = st.selectbox(
-        "Model",
-        options=matcher.model_options(provider),
-        help="'auto' tries the best model first and moves down the list if one "
-             "is retired, rate limited or overloaded.",
-    )
-    double_check = st.checkbox(
-        "Double-check with a second model",
-        value=True,
-        help="Runs the matching twice using two different models and compares "
-             "the answers. Points both models agree on are marked verified. "
-             "It uses a second model, so it draws on that model's separate "
-             "daily allowance rather than doubling up on the first.",
-    )
-    backup_provider = "groq" if provider == "gemini" else "gemini"
-    backup_key = st.text_input(
-        f"Backup key — {matcher.PROVIDERS[backup_provider]['label']}",
-        value=secret("GROQ_API_KEY" if backup_provider == "groq" else "GEMINI_API_KEY"),
-        type="password",
-        help="A completely separate free allowance. When the first provider "
-             "is used up for the day, the app switches to this instead of "
-             "dropping to offline matching.",
-    )
-    st.caption(
-        f"Get free keys → [{provider}]({provider_info['key_url']}) · "
-        f"[{backup_provider}]({matcher.PROVIDERS[backup_provider]['key_url']})"
-    )
-
-    # --- what is left of today's free allowance --------------------------
-    with st.expander("Today's free usage", expanded=False):
-        rows = matcher.remaining_today(provider)
-        total_used = sum(u for _, u, _ in rows)
-        total_cap = sum(c for _, _, c in rows)
-        st.progress(
-            min(total_used / max(total_cap, 1), 1.0),
-            text=f"{total_used} of {total_cap} requests used today",
-        )
-        for name, used, cap in rows:
-            bar = "█" * min(used, cap) + "·" * max(cap - used, 0)
-            st.caption(f"`{bar}` {name} — {used}/{cap}")
-        st.caption(
-            f"The free tier allows {matcher.DAILY_FREE_REQUESTS} requests per "
-            "model per day. Repeating an analysis you have already run costs "
-            "nothing — the answer is reused."
-        )
-
-    st.divider()
-    st.subheader("Transcription")
-    # A shared container has neither the memory to hold a speech model nor the
-    # processor to spare, so hosted deployments always use the hosted service.
-    if HOSTED or not transcriber.LOCAL_AVAILABLE:
-        engine_options = ["groq"]
-        st.caption(
-            "Transcription runs through Groq here. Running the app on your "
-            "own computer adds an offline option that needs no key."
-        )
-    else:
-        engine_options = ["local", "groq"]
-
-    engine = st.radio(
-        "Engine",
-        options=engine_options,
-        format_func=lambda key: {
-            "local": "On this computer (faster-whisper, no key)",
-            "groq": "Hosted (Groq Whisper, needs a free key)",
-        }[key],
-        help=(
-            "On this computer keeps everything private and offline but is "
-            "slower. Hosted is much faster and is the right choice when the "
-            "app is running on a free web host."
-        ),
-    )
-    if engine == "local":
-        model_size = st.select_slider(
-            "Accuracy vs speed",
-            options=transcriber.LOCAL_MODEL_SIZES,
-            value="base",
-            help="'base' is a good balance. 'small' is noticeably better on "
-                 "echoey room audio but roughly 2-3x slower.",
-        )
-        groq_key = ""
-    else:
-        model_size = "base"
-        groq_key = st.text_input(
-            "Groq API key",
-            value=llm_api_key if provider == "groq" else secret("GROQ_API_KEY"),
-            type="password",
-        )
-        st.caption("Free key → https://console.groq.com/keys")
-
-    language = st.text_input("Spoken language code", value="en", max_chars=5)
-
-    st.divider()
-    st.subheader("Graphics")
-    card_style = st.radio(
-        "Point style",
-        options=["fullscreen", "caption"],
-        format_func=lambda key: {
-            "fullscreen": "Full-screen cards (template)",
-            "caption": "Caption over the video",
-        }[key],
-        help="Full-screen cards fill the frame with the beige template while "
-             "the teaching continues underneath. Captions keep the picture "
-             "visible and put a small card along the bottom.",
-    )
-    caption_seconds = st.slider(
-        "Fallback seconds on screen", 3, 20, 8,
-        help="Only used when a point has no end time of its own. Normally "
-             "each card stays up for as long as the point is being taught, "
-             "with a floor so it can be written down.",
-    )
+    # The two things a leader might actually change. Everything else sits
+    # under Advanced, with defaults that are right for a normal lesson.
     discussion_seconds = st.slider(
         "Discussion time after each application", 10, 120,
         int(matcher.APPLICATION_PAUSE_SECONDS), step=5,
@@ -342,47 +219,6 @@ with st.sidebar:
              "out and replaced by it, so the video moves straight on to where "
              "they resume.",
     )
-    overview_card = st.checkbox(
-        "Show the takeaway and divisions together on one card",
-        value=True,
-        help="Shown from just before the takeaway is spoken until the first "
-             "division is introduced — long enough to be written down. The "
-             "divisions then each get their own card when introduced.",
-    )
-    soft_transitions = st.checkbox(
-        "Soften the cuts",
-        value=False,
-        help="Off matches the reference style: graphics cut hard in and hard "
-             "out. On gives a quarter-second dissolve.",
-    )
-
-    logo_file = st.file_uploader(
-        "Logo for the top right of each card (optional)",
-        type=["png", "jpg", "jpeg", "webp"],
-        help=f"Sits in a reserved {editor.CARD_LOGO_BOX}×{editor.CARD_LOGO_BOX} "
-             "pixel square. A PNG with a transparent background works best.",
-    )
-
-    st.markdown("**Intro and outro**")
-    _assets = {
-        name: asset_default(name) for name in ("intro", "outro", "logo")
-    }
-    _found = [name for name, path in _assets.items() if path]
-    if _found:
-        st.caption(f"Using {', '.join(_found)} from the assets folder.")
-    if not _assets["intro"] and not _assets["outro"]:
-        st.caption(
-            "No intro or outro set, so none will appear in the video. Upload "
-            "them above, or drop `intro.png` and `outro.png` into the "
-            "`assets` folder to have them used every time."
-        )
-    intro_file = st.file_uploader(
-        "Opening image", type=["png", "jpg", "jpeg", "webp"], key="intro_img"
-    )
-    outro_file = st.file_uploader(
-        "Closing image", type=["png", "jpg", "jpeg", "webp"], key="outro_img"
-    )
-    bookend_seconds = st.slider("Seconds each is held", 2, 15, 5)
     quality = st.selectbox(
         "Video quality",
         options=["small", "balanced", "best"],
@@ -396,21 +232,188 @@ with st.sidebar:
              "≈ 224 MB, best ≈ 400 MB. Balanced is a good teaching video; "
              "smaller is barely distinguishable and much easier to move about.",
     )
-    threads = st.slider("CPU threads for rendering", 1, 16, 4)
-    render_engine = st.radio(
-        "Rendering engine",
-        options=["auto", "moviepy"],
-        format_func=lambda key: {
-            "auto": "Fast (recommended)",
-            "moviepy": "Compatible (slower)",
-        }[key],
-        help=(
-            "Fast hands the whole job to FFmpeg in one pass — about 20x "
-            "quicker on a full-length lesson. Switch to Compatible only if a "
-            "particular file refuses to render."
-        ),
-    )
-    st.caption(f"Overlay font: {editor.font_report()}")
+
+    with st.expander("Advanced settings", expanded=False):
+        st.markdown("**AI matching**")
+        provider = st.selectbox(
+            "Provider",
+            options=list(matcher.PROVIDERS.keys()),
+            format_func=lambda key: matcher.PROVIDERS[key]["label"],
+            help="Both have free tiers. Gemini is the most generous.",
+        )
+        provider_info = matcher.PROVIDERS[provider]
+        default_key = secret("GEMINI_API_KEY" if provider == "gemini" else "GROQ_API_KEY")
+        llm_api_key = st.text_input(
+            "API key",
+            value=default_key,
+            type="password",
+            help=f"Free key: {provider_info['key_url']}",
+        )
+        llm_model = st.selectbox(
+            "Model",
+            options=matcher.model_options(provider),
+            help="'auto' tries the best model first and moves down the list if one "
+                 "is retired, rate limited or overloaded.",
+        )
+        double_check = st.checkbox(
+            "Double-check with a second model",
+            value=True,
+            help="Runs the matching twice using two different models and compares "
+                 "the answers. Points both models agree on are marked verified. "
+                 "It uses a second model, so it draws on that model's separate "
+                 "daily allowance rather than doubling up on the first.",
+        )
+        backup_provider = "groq" if provider == "gemini" else "gemini"
+        backup_key = st.text_input(
+            f"Backup key — {matcher.PROVIDERS[backup_provider]['label']}",
+            value=secret("GROQ_API_KEY" if backup_provider == "groq" else "GEMINI_API_KEY"),
+            type="password",
+            help="A completely separate free allowance. When the first provider "
+                 "is used up for the day, the app switches to this instead of "
+                 "dropping to offline matching.",
+        )
+        st.caption(
+            f"Get free keys → [{provider}]({provider_info['key_url']}) · "
+            f"[{backup_provider}]({matcher.PROVIDERS[backup_provider]['key_url']})"
+        )
+
+        # --- what is left of today's free allowance --------------------------
+        with st.expander("Today's free usage", expanded=False):
+            rows = matcher.remaining_today(provider)
+            total_used = sum(u for _, u, _ in rows)
+            total_cap = sum(c for _, _, c in rows)
+            st.progress(
+                min(total_used / max(total_cap, 1), 1.0),
+                text=f"{total_used} of {total_cap} requests used today",
+            )
+            for name, used, cap in rows:
+                bar = "█" * min(used, cap) + "·" * max(cap - used, 0)
+                st.caption(f"`{bar}` {name} — {used}/{cap}")
+            st.caption(
+                f"The free tier allows {matcher.DAILY_FREE_REQUESTS} requests per "
+                "model per day. Repeating an analysis you have already run costs "
+                "nothing — the answer is reused."
+            )
+        st.divider()
+        st.markdown("**Transcription**")
+        # A shared container has neither the memory to hold a speech model nor the
+        # processor to spare, so hosted deployments always use the hosted service.
+        if HOSTED or not transcriber.LOCAL_AVAILABLE:
+            engine_options = ["groq"]
+            st.caption(
+                "Transcription runs through Groq here. Running the app on your "
+                "own computer adds an offline option that needs no key."
+            )
+        else:
+            engine_options = ["local", "groq"]
+
+        engine = st.radio(
+            "Engine",
+            options=engine_options,
+            format_func=lambda key: {
+                "local": "On this computer (faster-whisper, no key)",
+                "groq": "Hosted (Groq Whisper, needs a free key)",
+            }[key],
+            help=(
+                "On this computer keeps everything private and offline but is "
+                "slower. Hosted is much faster and is the right choice when the "
+                "app is running on a free web host."
+            ),
+        )
+        if engine == "local":
+            model_size = st.select_slider(
+                "Accuracy vs speed",
+                options=transcriber.LOCAL_MODEL_SIZES,
+                value="base",
+                help="'base' is a good balance. 'small' is noticeably better on "
+                     "echoey room audio but roughly 2-3x slower.",
+            )
+            groq_key = ""
+        else:
+            model_size = "base"
+            groq_key = st.text_input(
+                "Groq API key",
+                value=llm_api_key if provider == "groq" else secret("GROQ_API_KEY"),
+                type="password",
+            )
+            st.caption("Free key → https://console.groq.com/keys")
+
+        language = st.text_input("Spoken language code", value="en", max_chars=5)
+        st.divider()
+        st.markdown("**Graphics**")
+        card_style = st.radio(
+            "Point style",
+            options=["fullscreen", "caption"],
+            format_func=lambda key: {
+                "fullscreen": "Full-screen cards (template)",
+                "caption": "Caption over the video",
+            }[key],
+            help="Full-screen cards fill the frame with the beige template while "
+                 "the teaching continues underneath. Captions keep the picture "
+                 "visible and put a small card along the bottom.",
+        )
+        caption_seconds = st.slider(
+            "Fallback seconds on screen", 3, 20, 8,
+            help="Only used when a point has no end time of its own. Normally "
+                 "each card stays up for as long as the point is being taught, "
+                 "with a floor so it can be written down.",
+        )
+        overview_card = st.checkbox(
+            "Show the takeaway and divisions together on one card",
+            value=True,
+            help="Shown from just before the takeaway is spoken until the first "
+                 "division is introduced — long enough to be written down. The "
+                 "divisions then each get their own card when introduced.",
+        )
+        soft_transitions = st.checkbox(
+            "Soften the cuts",
+            value=False,
+            help="Off matches the reference style: graphics cut hard in and hard "
+                 "out. On gives a quarter-second dissolve.",
+        )
+
+        logo_file = st.file_uploader(
+            "Logo for the top right of each card (optional)",
+            type=["png", "jpg", "jpeg", "webp"],
+            help=f"Sits in a reserved {editor.CARD_LOGO_BOX}×{editor.CARD_LOGO_BOX} "
+                 "pixel square. A PNG with a transparent background works best.",
+        )
+
+        st.markdown("**Intro and outro**")
+        _assets = {
+            name: asset_default(name) for name in ("intro", "outro", "logo")
+        }
+        _found = [name for name, path in _assets.items() if path]
+        if _found:
+            st.caption(f"Using {', '.join(_found)} from the assets folder.")
+        if not _assets["intro"] and not _assets["outro"]:
+            st.caption(
+                "No intro or outro set, so none will appear in the video. Upload "
+                "them above, or drop `intro.png` and `outro.png` into the "
+                "`assets` folder to have them used every time."
+            )
+        intro_file = st.file_uploader(
+            "Opening image", type=["png", "jpg", "jpeg", "webp"], key="intro_img"
+        )
+        outro_file = st.file_uploader(
+            "Closing image", type=["png", "jpg", "jpeg", "webp"], key="outro_img"
+        )
+        bookend_seconds = st.slider("Seconds each is held", 2, 15, 5)
+        threads = st.slider("CPU threads for rendering", 1, 16, 4)
+        render_engine = st.radio(
+            "Rendering engine",
+            options=["auto", "moviepy"],
+            format_func=lambda key: {
+                "auto": "Fast (recommended)",
+                "moviepy": "Compatible (slower)",
+            }[key],
+            help=(
+                "Fast hands the whole job to FFmpeg in one pass — about 20x "
+                "quicker on a full-length lesson. Switch to Compatible only if a "
+                "particular file refuses to render."
+            ),
+        )
+        st.caption(f"Overlay font: {editor.font_report()}")
 
     st.divider()
     st.subheader("About this copy")
@@ -685,6 +688,17 @@ outro_path = save_upload(outro_file, "outro") or asset_default("outro")
 outline = {"takeaway": takeaway, "divisions": divisions}
 points = matcher.build_lesson_points(outline)
 
+# Results belong to the outline they were made from. Change a point after
+# analysing and the table would still show the old timings — so the
+# fingerprint of what was analysed is kept, and a change clears the results.
+_fingerprint = repr((
+    [(p.category, p.text, p.division) for p in points],
+    speaker_name.strip(), speaker_title.strip(),
+))
+if st.session_state.get("verdicts") and st.session_state.get("analysed_fingerprint") != _fingerprint:
+    st.session_state.update(verdicts=None, matches=None, notes=[], output_path=None)
+    st.info("The outline changed since the last analysis — analyse again to refresh the timings.")
+
 # --------------------------------------------------------------------------
 # Save the upload once and read its properties
 # --------------------------------------------------------------------------
@@ -879,6 +893,7 @@ if st.button("🔍 Analyse recording", type="primary", disabled=not ready, width
             verdicts = verifier.lay_out(verdicts, video_duration, overview=overview_card)
             st.session_state.matches = [v.match for v in verdicts]
             st.session_state.verdicts = verdicts
+            st.session_state.analysed_fingerprint = _fingerprint
             st.session_state.notes = notes
             bar.progress(1.0)
             status.update(label="Analysis complete", state="complete", expanded=False)
@@ -934,7 +949,6 @@ if st.session_state.verdicts:
                 # bad placement cannot reach the video by inattention.
                 "Show": v.verdict != verifier.REJECTED,
                 "Status": verifier.VERDICT_LABEL[v.verdict],
-                "Type": v.match.type,
                 "Header": v.match.header or v.match.category,
                 "Point": v.match.text,
                 "Start (s)": float(v.match.start_time),
@@ -949,7 +963,6 @@ if st.session_state.verdicts:
                        if v.match.cut_end > v.match.cut_start else "")
                     if v.match.has_timer else "—"
                 ),
-                "Score": float(v.score),
                 "Heard": v.match.evidence,
                 "Why": v.reason_text,
             }
@@ -966,7 +979,6 @@ if st.session_state.verdicts:
         column_config={
             "Show": st.column_config.CheckboxColumn("Show", width="small"),
             "Status": st.column_config.TextColumn("Status", disabled=True, width="small"),
-            "Type": st.column_config.TextColumn("Type", disabled=True, width="small"),
             "Header": st.column_config.TextColumn(
                 "Header", width="small",
                 help="The bold line at the top of the card. Edit it freely — "
@@ -994,11 +1006,6 @@ if st.session_state.verdicts:
                 help="Discussion time inserted after the question, and how "
                      "much of the speaker's own wait it replaces.",
             ),
-            "Score": st.column_config.ProgressColumn(
-                "Score", min_value=0.0, max_value=1.0, format="%.2f",
-                help="Combined result of every check: quote found in the "
-                     "transcript, wording overlap, and whether a second model agreed.",
-            ),
             "Heard": st.column_config.TextColumn("What the speaker said", disabled=True),
             "Why": st.column_config.TextColumn("Checks", disabled=True, width="medium"),
         },
@@ -1018,7 +1025,7 @@ if st.session_state.verdicts:
             editor.Cue(
                 text=str(row["Point"]),
                 start=start,
-                label=str(row.get("Header") or row.get("Type", "")).strip(),
+                label=str(row.get("Header") or "").strip(),
                 duration=span if span > 0.05 else float(caption_seconds),
                 has_timer=wants_timer,
                 timer_duration=float(discussion_seconds) if wants_timer else 0.0,
@@ -1027,7 +1034,7 @@ if st.session_state.verdicts:
                 cut_start=float(plan.cut_start) if plan and wants_timer else 0.0,
                 cut_end=float(plan.cut_end) if plan and wants_timer else 0.0,
                 items=list(plan.items) if plan else [],
-                kind=str(row.get("Type", "")),
+                kind=(plan.type if plan else ""),
             )
         )
 
