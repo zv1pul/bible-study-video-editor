@@ -34,6 +34,7 @@ from dataclasses import dataclass, field, replace
 from difflib import SequenceMatcher
 from typing import Dict, List, Optional, Sequence
 
+import matcher as matcher_module
 from matcher import Element, LessonPoint, _tokens
 
 Match = Element
@@ -174,7 +175,35 @@ def semantic_score(point_text: str, segments: Sequence[Segment], time_value: flo
     return max(0.0, min(1.0, 0.8 * overlap + 0.2 * fuzzy))
 
 
-def consensus_score(primary: float, second: Optional[float], tolerance: float = 12.0) -> Optional[float]:
+CONSENSUS_TOLERANCE = 12.0
+
+
+def verbatim_score(point_text: str, segments: Sequence[Segment], time_value: float,
+                   radius: float = 15.0) -> float:
+    """
+    How much of the point is spoken word for word within `radius` seconds.
+
+    Points are read out nearly verbatim when they are introduced, so this
+    separates "the words of the point were said here" (≈1.0) from "the same
+    topic was being discussed" (fragments, ≈0.3–0.5) far more sharply than
+    the bag-of-words semantic score can.
+    """
+    quote = matcher_module._quote_tokens(point_text)
+    if len(quote) < 3:
+        return 0.0
+    window = [
+        seg for seg in segments
+        if seg.end >= time_value - radius and seg.start <= time_value + radius
+    ]
+    spoken = matcher_module._quote_tokens(" ".join(seg.text for seg in window))
+    if not spoken:
+        return 0.0
+    blocks = SequenceMatcher(None, quote, spoken, autojunk=False).get_matching_blocks()
+    return min(1.0, sum(b.size for b in blocks if b.size >= 2) / len(quote))
+
+
+def consensus_score(primary: float, second: Optional[float],
+                    tolerance: float = CONSENSUS_TOLERANCE) -> Optional[float]:
     """
     Layer 5: how closely an independent second run agreed.
 
@@ -224,6 +253,22 @@ def verify_matches(
             )
             continue
 
+        # A passage found read aloud word for word is pinned to those words;
+        # snapping it to a line start would only make it less exact.
+        if match.source == "quote":
+            share = float(match.confidence)
+            verdicts.append(
+                Verdict(
+                    match=match,
+                    verdict=VERIFIED if share >= 0.75 else REVIEW,
+                    score=share,
+                    reasons=[f"Read aloud word for word ({share:.0%} of the words matched)."]
+                    + ([] if share >= 0.75 else
+                       ["Some words differ from the transcript — worth a look."]),
+                )
+            )
+            continue
+
         # --- Layer 1: range -------------------------------------------------
         if duration and (time_value < 0 or time_value > duration):
             reasons.append(
@@ -244,11 +289,40 @@ def verify_matches(
                 )
             time_value = snapped
 
-        # --- Layers 3 and 4 ---------------------------------------------------
-        ev = evidence_score(match.evidence, segments, time_value)
-        sem = semantic_score(text_by_id.get(match.id, match.text), segments, time_value)
+        # --- Second opinion: does the other placement fit the words better? --
+        # Two models disagreeing is only useful if we can tell who is right.
+        # Points are read nearly verbatim, so the placement whose surrounding
+        # words overlap the point far more is the right one — and when that is
+        # the second model's, the card moves there (keeping its length).
+        end_time = float(match.end_time)
+        moved = False
+        other = by_id_second.get(match.id)
+        if other is not None and abs(other - time_value) > CONSENSUS_TOLERANCE:
+            point_text = text_by_id.get(match.id, match.text)
+            here = semantic_score(point_text, segments, time_value)
+            there = semantic_score(point_text, segments, other)
+            here_v = verbatim_score(point_text, segments, time_value)
+            there_v = verbatim_score(point_text, segments, other)
+            better_words = there_v >= 0.7 and there_v >= here_v + 0.25
+            better_topic = there >= 0.3 and there >= max(here * 1.5, here + 0.15)
+            if better_words or (better_topic and there_v >= here_v):
+                span_kept = max(float(match.end_time) - float(match.start_time), 0.0)
+                time_value = snap_to_transcript(other, segments)
+                end_time = time_value + span_kept
+                snapped_from = original
+                moved = True
+                reasons.append(
+                    f"Moved to {format_timestamp(time_value)}, where the second "
+                    "model placed it — the words spoken there match this point "
+                    "far better."
+                )
 
-        if match.source == "llm":
+        # --- Layers 3 and 4 ---------------------------------------------------
+        sem = semantic_score(text_by_id.get(match.id, match.text), segments, time_value)
+        # A moved card has no quote for its new spot; the word match stands in.
+        ev = sem if moved else evidence_score(match.evidence, segments, time_value)
+
+        if match.source == "llm" and not moved:
             if ev == 0.0 and match.evidence.strip():
                 reasons.append("The quoted line is not spoken anywhere near this time.")
             elif ev < 0.4 and match.evidence.strip():
@@ -261,7 +335,7 @@ def verify_matches(
 
         # --- Layer 5 ----------------------------------------------------------
         cons = consensus_score(time_value, by_id_second.get(match.id))
-        if cons is not None:
+        if cons is not None and not moved:
             other = by_id_second[match.id]
             if cons >= 0.65:
                 reasons.append(f"A second model agreed ({format_timestamp(other)}).")
@@ -274,7 +348,7 @@ def verify_matches(
         # Measured against the SNAPPED start and the end that will actually be
         # used, not the model's original numbers — otherwise a card that was
         # moved earlier gets reported as lasting no time at all.
-        final_end = max(float(match.end_time), time_value + MIN_READABLE_SECONDS)
+        final_end = max(end_time, time_value + MIN_READABLE_SECONDS)
         span = max(final_end - time_value, 0.0)
         if span <= 0:
             reasons.append("No end time was given.")

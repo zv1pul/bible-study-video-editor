@@ -106,7 +106,7 @@ def resolve_chain(provider: str, model: str) -> List[str]:
     return [model] + [m for m in chain if m != model]
 
 
-CATEGORIES = ["Takeaway", "Division", "Principle", "Application"]
+CATEGORIES = ["Takeaway", "Division", "Principle", "Application", "Scripture"]
 
 
 # --------------------------------------------------------------------------
@@ -116,7 +116,17 @@ CATEGORIES = ["Takeaway", "Division", "Principle", "Application"]
 
 ELEMENT_TYPES = [
     "lower_third", "overview", "takeaway", "division", "principle", "application",
+    "scripture",
 ]
+
+# A scripture card appears a moment before the first word of the passage is
+# read and leaves a moment after the last, so it tracks the reading itself.
+SCRIPTURE_LEAD_SECONDS = 1.5
+SCRIPTURE_TAIL_SECONDS = 1.0
+# The overview card (takeaway + divisions) is held until the first division
+# is introduced, but never longer than this: a teacher who chats for two
+# minutes between the two should be seen, not covered by a card.
+OVERVIEW_MAX_SECONDS = 45.0
 
 # Discussion time inserted after every application question, in seconds.
 APPLICATION_PAUSE_SECONDS = 30.0
@@ -152,6 +162,7 @@ class LessonPoint:
     category: str
     text: str
     division: str = ""      # the division this sits under, if any
+    reference: str = ""     # "Romans 3:23" — scripture only
 
     @property
     def type(self) -> str:
@@ -297,12 +308,52 @@ def build_lesson_points(outline) -> List[LessonPoint]:
     return _points_from_flat(outline)
 
 
+_LIST_MARKER = re.compile(r"^\s*(\(?[a-z]\)|[a-z][.)]|[-•*–])\s", re.IGNORECASE)
+_DANGLING = re.compile(
+    r"([,;:]|\b(to|or|and|of|the|a|an|for|in|on|with|that|be|is|are|by|as|at))$",
+    re.IGNORECASE,
+)
+
+
+def split_items(text) -> List[str]:
+    """
+    One item per line, joined back together where a line is plainly the
+    continuation of the one before — so a question written over several
+    lines ("are you most likely to / (a) make excuses, / (b) try harder, or
+    / (c) admit your need? / Why?") stays one card instead of five.
+
+    A line continues the previous item when it starts with a list marker
+    such as "(a)" or "-", when the previous line ends mid-sentence (a comma,
+    or a dangling word like "to" or "or"), or when it is a two-word tail
+    ending in "?" such as "Why?" (that one joins even across a blank line).
+    Otherwise blank lines always separate items.
+    """
+    items: List[str] = []
+    prev_blank = True
+    for raw in str(text or "").replace("\r", "").split("\n"):
+        line = raw.strip()
+        if not line:
+            prev_blank = True
+            continue
+        tail = line.endswith("?") and len(line.split()) <= 2   # "Why?"
+        joins = bool(items) and (
+            tail
+            or (not prev_blank and (
+                _LIST_MARKER.match(line) or _DANGLING.search(items[-1])
+            ))
+        )
+        if joins:
+            items[-1] = f"{items[-1]} {line}"
+        else:
+            items.append(line)
+        prev_blank = False
+    return items
+
+
 def _lines(value) -> List[str]:
     if isinstance(value, (list, tuple)):
-        items = value
-    else:
-        items = str(value or "").splitlines()
-    return [str(item).strip() for item in items if str(item).strip()]
+        return [str(item).strip() for item in value if str(item).strip()]
+    return split_items(value)
 
 
 def _points_from_structured(outline: dict) -> List[LessonPoint]:
@@ -341,7 +392,94 @@ def _points_from_structured(outline: dict) -> List[LessonPoint]:
     for text in _lines(outline.get("applications")):
         add("Application", text)
 
+    # Scripture read aloud, in the order it is read. Found by its own words,
+    # so it may fall anywhere in the recording.
+    for reference, text in parse_scripture(outline.get("scripture")):
+        counts["Scripture"] = counts.get("Scripture", 0) + 1
+        points.append(
+            LessonPoint(
+                id=f"scripture_{counts['Scripture']}",
+                category="Scripture",
+                text=text,
+                reference=reference,
+            )
+        )
+
     return points
+
+
+# "Romans 3:21–22", "1 John 4:8", "Psalm 23", "EXODUS 20:3", "Song of Songs 2:1"
+_REFERENCE = re.compile(
+    r"^\s*(?:[1-3]\s*)?[A-Za-z]+(?:\s+(?:of\s+)?[A-Za-z]+){0,3}\s+\d{1,3}"
+    r"(?::\d{1,3}(?:\s*[-–—]\s*\d{1,3}(?::\d{1,3})?)?)?\s*$"
+)
+
+
+def looks_like_reference(line: str) -> bool:
+    return bool(_REFERENCE.match(line or "")) and len((line or "").split()) <= 5
+
+
+def _tidy_reference(line: str) -> str:
+    """"EXODUS 20:3" -> "Exodus 20:3"; keeps "1 John" and "of" as they should be."""
+    words = line.strip().split()
+    out = []
+    for word in words:
+        if word.lower() == "of":
+            out.append("of")
+        elif word[:1].isdigit():
+            out.append(word)
+        else:
+            out.append(word[:1].upper() + word[1:].lower())
+    return " ".join(out)
+
+
+def parse_scripture(value) -> List[tuple]:
+    """
+    Turn the scripture box into [(reference, verse text), ...].
+
+    Accepts a list of {"reference", "text"} pairs, or free text where each
+    passage starts with its reference on a line of its own and the verse
+    follows — over one line or several, blank lines included:
+
+        ROMANS 3:21–22
+        “But now apart from the law the righteousness of God has been made
+        known, to which the Law and the Prophets testify.
+
+        This righteousness is given through faith in Jesus Christ…”
+
+    A block that does not begin with a reference continues the passage
+    before it. Verse text is joined into one paragraph for the card.
+    """
+    if not value:
+        return []
+    if isinstance(value, (list, tuple)):
+        out = []
+        for item in value:
+            if isinstance(item, dict):
+                ref = str(item.get("reference", "")).strip()
+                text = " ".join(str(item.get("text", "")).split())
+            else:
+                ref, text = "", " ".join(str(item).split())
+            if text:
+                out.append((_tidy_reference(ref) if ref else "Scripture", text))
+        return out
+
+    passages: List[list] = []          # [reference, [verse lines]]
+    for raw in str(value).replace("\r", "").split("\n"):
+        line = raw.strip()
+        if not line:
+            continue
+        if looks_like_reference(line):
+            passages.append([_tidy_reference(line), []])
+        elif passages:
+            passages[-1][1].append(line)
+        else:
+            passages.append(["Scripture", [line]])
+    return [
+        (ref, " ".join(" ".join(lines).split()))
+        for ref, lines in passages
+        if lines
+    ]
 
 
 def _points_from_flat(outline: Dict[str, str]) -> List[LessonPoint]:
@@ -360,6 +498,8 @@ def _points_from_flat(outline: Dict[str, str]) -> List[LessonPoint]:
 
 def header_for(point: LessonPoint, points: Sequence[LessonPoint]) -> str:
     """"Takeaway" on its own, but "Principle #1" when there are several."""
+    if point.category == "Scripture":
+        return point.reference or "Scripture"
     same = [p for p in points if p.category == point.category]
     if len(same) <= 1:
         return point.category
@@ -603,6 +743,13 @@ LAST repetition finishes — that is, at the moment the speaker turns to
 commentary, a story, a personal example, or dialogue. Do not leave the slide
 up over the explanation that follows.
 
+FINDING SCRIPTURE
+Items of type "scripture" are passages the speaker reads aloud, close to
+word for word. They may come anywhere in the recording, in the order listed.
+start_time is the moment the FIRST words of the passage itself are spoken —
+not the announcement of the reference. end_time is when the LAST word of the
+passage is spoken. evidence is the passage's opening words as transcribed.
+
 FINDING THE END — applications
 The slide starts as the question is introduced or read.
 Look at MEASURED SILENCES above:
@@ -621,7 +768,8 @@ RULES
 3. Both times must fall between 0 and {duration:.0f}, and end_time must be
    greater than start_time.
 4. Divisions normally appear in the written order, and the outline above is
-   in teaching order. Where an item says "belongs under", it is taught after
+   in teaching order (scripture excepted — it is read wherever the teaching
+   calls for it). Where an item says "belongs under", it is taught after
    that division is introduced and before the next division begins — use that
    to narrow your search.
 5. If an item is never discussed, still return it with confidence 0.
@@ -1411,6 +1559,122 @@ def _fallback_elements(
     return _sorted(elements)
 
 
+# --------------------------------------------------------------------------
+# Finding a passage read aloud
+# --------------------------------------------------------------------------
+#
+# Scripture is the one kind of point the speaker reads word for word, so it
+# can be found without a language model: slide the passage along the
+# transcript's words and keep the best-matching stretch. Word timestamps make
+# the result exact to the word; without them the segment times are used.
+
+QUOTE_MIN_RATIO = 0.55          # below this the passage was not read out
+_WORD_RE = re.compile(r"[a-z0-9']+")
+
+
+def _quote_tokens(text: str) -> List[str]:
+    text = (text or "").lower().replace("’", "'")
+    return _WORD_RE.findall(text)
+
+
+def _transcript_words(segments: Sequence[Segment]) -> List[tuple]:
+    """[(token, start, end), ...] for the whole transcript."""
+    out: List[tuple] = []
+    for segment in segments:
+        words = segment.get("words") or []
+        if words:
+            for w in words:
+                for token in _quote_tokens(str(w.get("word", w.get("text", "")))):
+                    out.append((token, float(w.get("start", segment["start"])),
+                                float(w.get("end", segment["end"]))))
+        else:
+            tokens = _quote_tokens(segment["text"])
+            if not tokens:
+                continue
+            span = max(float(segment["end"]) - float(segment["start"]), 0.1)
+            step = span / len(tokens)
+            for i, token in enumerate(tokens):
+                out.append((token, float(segment["start"]) + i * step,
+                            float(segment["start"]) + (i + 1) * step))
+    return out
+
+
+def locate_quote(segments: Sequence[Segment], text: str) -> Optional[tuple]:
+    """
+    Where a passage is read aloud: (start, end, ratio), or None.
+
+    `ratio` is the share of the passage's words found in order in the best
+    stretch of the transcript (0–1). Whisper's small slips — "declared" heard
+    as "the cleared" — cost a word or two, not the match.
+    """
+    from difflib import SequenceMatcher
+
+    quote = _quote_tokens(text)
+    words = _transcript_words(segments)
+    if len(quote) < 3 or len(words) < 3:
+        return None
+    tokens = [w[0] for w in words]
+    n = len(quote)
+
+    # Cheap pre-filter: only windows sharing enough vocabulary get scored.
+    quote_set = set(quote)
+    best = (0.0, 0, 0)
+    for size in sorted({n, max(3, int(n * 0.8)), int(n * 1.25) + 1}):
+        if size > len(tokens):
+            size = len(tokens)
+        overlap = sum(1 for t in tokens[:size] if t in quote_set)
+        for start in range(0, len(tokens) - size + 1):
+            if start:
+                overlap += (tokens[start + size - 1] in quote_set) - (tokens[start - 1] in quote_set)
+            if overlap < n * 0.45:
+                continue
+            window = tokens[start:start + size]
+            matcher = SequenceMatcher(None, quote, window, autojunk=False)
+            ratio = sum(block.size for block in matcher.get_matching_blocks()) / n
+            if ratio > best[0]:
+                best = (ratio, start, start + size)
+    ratio, a, b = best
+    if ratio < QUOTE_MIN_RATIO:
+        return None
+
+    # Trim the window to the first and last words that actually matched.
+    matcher = SequenceMatcher(None, quote, tokens[a:b], autojunk=False)
+    blocks = [blk for blk in matcher.get_matching_blocks() if blk.size]
+    first = a + blocks[0].b
+    last = a + blocks[-1].b + blocks[-1].size - 1
+    return words[first][1], words[last][2], round(ratio, 3)
+
+
+def place_scripture(elements: List[Element], segments: Sequence[Segment],
+                    notes: List[str]) -> List[Element]:
+    """Pin every scripture card to where its words are actually read."""
+    out = []
+    for element in elements:
+        if element.type != "scripture":
+            out.append(element)
+            continue
+        found = locate_quote(segments, element.content)
+        if not found:
+            element.notes.append(
+                "These words were not found read aloud; the AI's guess is used."
+            )
+            out.append(element)
+            continue
+        start, end, ratio = found
+        out.append(replace(
+            element,
+            start_time=max(0.0, start - SCRIPTURE_LEAD_SECONDS),
+            end_time=end + SCRIPTURE_TAIL_SECONDS,
+            source="quote",
+            confidence=ratio,
+            evidence=" ".join(element.content.split()[:8]),
+            notes=list(element.notes) + [
+                f"Read aloud word for word ({ratio:.0%} of the words matched)."
+            ],
+        ))
+    return out
+
+
 def _readable_seconds(text: str) -> float:
     words = len((text or "").split())
     return max(READ_MIN_SECONDS, min(READ_MAX_SECONDS, words * READ_SECONDS_PER_WORD + 3.0))
@@ -1497,13 +1761,22 @@ def layout_timeline(
             first_division = next(
                 (d for d in divisions if d.start_time > takeaway.start_time), None
             )
-            end = first_division.start_time if first_division else max(
-                takeaway.end_time, takeaway.start_time + READ_MIN_SECONDS)
+            start = max(takeaway.start_time - 1.0, 0.0)
+            # Long enough to read the takeaway and every division title,
+            # held while the takeaway is still being spoken, but never past
+            # OVERVIEW_MAX_SECONDS — and always down before the first division.
+            words = len(takeaway.content.split()) + sum(
+                len(d.content.split()) for d in divisions)
+            hold = max(READ_MIN_SECONDS, words * read_seconds_per_word + 3.0)
+            hold = max(hold, takeaway.end_time - start)
+            end = start + min(hold, OVERVIEW_MAX_SECONDS)
+            if first_division:
+                end = min(end, first_division.start_time)
             card = replace(
                 takeaway,
                 type="overview", header="Takeaway",
                 items=[d.content for d in divisions],
-                start_time=max(takeaway.start_time - 1.0, 0.0),
+                start_time=start,
                 end_time=end, id="overview",
             )
             out = [e for e in out if e.type != "takeaway"] + [card]
@@ -1517,6 +1790,8 @@ def layout_timeline(
     others = [e for e in out if e.type == "lower_third"]
 
     def readable(card: Element) -> float:
+        if card.type == "scripture":
+            return 3.0          # it tracks the reading itself; never padded
         if card.type == "division":
             return max(DIVISION_MIN_SECONDS,
                        min(READ_MAX_SECONDS, len(card.content.split()) * read_seconds_per_word + 3.0))
@@ -1526,9 +1801,21 @@ def layout_timeline(
                    min(READ_MAX_SECONDS, len(card.content.split()) * read_seconds_per_word + 3.0))
 
     cursor = 0.0
+    previous: Optional[Element] = None
     for index, card in enumerate(cards):
         if card.start_time < cursor:
-            card.start_time = cursor
+            # Scripture is pinned to the reading, so it takes the moment and
+            # the card before it gives way — unless that card is holding the
+            # video paused, in which case nothing is being read anyway.
+            if (
+                card.type == "scripture" and previous is not None
+                and not (previous.type == "application" and previous.has_timer)
+                and card.start_time > previous.start_time + 1.0
+            ):
+                previous.end_time = card.start_time
+                cursor = card.start_time
+            else:
+                card.start_time = cursor
 
         # Share what is left fairly if the recording is running out.
         remaining_cards = len(cards) - index
@@ -1550,6 +1837,7 @@ def layout_timeline(
             cursor = card.cut_end if card.cut_end > card.cut_start else card.pause_at
         else:
             cursor = card.end_time
+        previous = card
 
     # -- no slivers of bare video between cards --------------------------------
     for earlier, later in zip(cards, cards[1:]):
@@ -1732,6 +2020,7 @@ def match_lesson_points(
     silences = list(silences or [])
 
     def finish(elements: List[Element], model_used: str) -> tuple:
+        elements = place_scripture(list(elements), segments, notes)
         elements = _clamp_elements(elements, duration)
         # Pauses are detected here, because they are facts about the audio.
         # Laying the cards out is done AFTER verification — see layout_timeline

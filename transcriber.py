@@ -359,6 +359,14 @@ def download_video(
         # Still a web page. Say which page, so the fix is obvious.
         raise RuntimeError(_explain_html_response(response))
 
+    # Keep the file's real name where the server offers it, so the finished
+    # video is "Zechariah 7-8 - captioned.mp4" rather than "source_from_link".
+    original = _filename_from_headers(response.headers)
+    if original:
+        candidate = os.path.join(os.path.dirname(destination), original)
+        if not os.path.exists(candidate):
+            destination = candidate
+
     declared = int(response.headers.get("content-length") or 0)
     if max_bytes and declared > max_bytes:
         raise RuntimeError(
@@ -398,6 +406,30 @@ def download_video(
         raise RuntimeError("That link produced an empty file.")
     _report(progress_cb, 1.0, f"Fetched {written / 1e6:.0f} MB.")
     return destination
+
+
+_FILENAME_STAR_RE = re.compile(r"filename\*\s*=\s*(?:UTF-8|utf-8)?''([^;]+)")
+_FILENAME_RE = re.compile(r'filename\s*=\s*"?([^";]+)"?')
+
+
+def _filename_from_headers(headers) -> str:
+    """A safe file name from Content-Disposition, or "" if there is none."""
+    from urllib.parse import unquote
+
+    value = headers.get("content-disposition", "") or ""
+    match = _FILENAME_STAR_RE.search(value)
+    name = unquote(match.group(1)) if match else ""
+    if not name:
+        match = _FILENAME_RE.search(value)
+        name = match.group(1) if match else ""
+    name = os.path.basename(name.strip().replace("\\", "/"))
+    name = re.sub(r"[^\w .()&'-]+", " ", name).strip(" .")
+    if not name or "." not in name:
+        return ""
+    stem, ext = os.path.splitext(name)
+    if ext.lower() not in (".mp4", ".mov", ".m4v", ".mkv", ".webm"):
+        return ""
+    return f"{stem[:80].strip()}{ext.lower()}"
 
 
 # --------------------------------------------------------------------------

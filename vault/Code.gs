@@ -34,6 +34,7 @@ var USAGE_COLUMNS = [
 
 function doGet(e) {
   var params = (e && e.parameter) || {};
+  setup();
   var settings = readSettings();
   var enabled = String(settings.ENABLED || "TRUE").toUpperCase() !== "FALSE";
   var code = String(params.code || "").trim();
@@ -67,6 +68,7 @@ function doPost(e) {
     return reply({ ok: false, error: "bad_json" });
   }
   if (typeof body !== "object" || body === null) body = {};
+  setup();
   logUsage(body);
   return reply({ ok: true });
 }
@@ -134,9 +136,10 @@ function reply(obj) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
-/** Run once from the editor to lay out the Settings tab. */
+/** Lays out the Settings and Usage tabs. Safe to run any number of times. */
 function setup() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (ss.getSheetByName(SETTINGS_SHEET) && ss.getSheetByName(USAGE_SHEET)) return;
   var sheet = ss.getSheetByName(SETTINGS_SHEET) || ss.insertSheet(SETTINGS_SHEET);
   if (sheet.getLastRow() === 0) {
     sheet.getRange(1, 1, 6, 3).setValues([

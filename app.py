@@ -234,7 +234,7 @@ with st.sidebar:
     # The two things a leader might actually change. Everything else sits
     # under Advanced, with defaults that are right for a normal lesson.
     discussion_seconds = st.slider(
-        "Discussion time after each application", 10, 120,
+        "Discussion time after each application", 10, 300,
         int(matcher.APPLICATION_PAUSE_SECONDS), step=5,
         help="A countdown of this length follows every application question. "
              "The speaker's own wait in the recording, however long, is cut "
@@ -610,7 +610,7 @@ with left:
                 target = os.path.join(workdir(), "source_from_link.mp4")
                 bar = st.progress(0.0)
                 line = st.empty()
-                transcriber.download_video(
+                target = transcriber.download_video(
                     link_url, target,
                     max_bytes=(HOSTED_UPLOAD_MAX_MB * 4 * 1024 * 1024) if HOSTED else 0,
                     progress_cb=lambda f, m: (bar.progress(min(max(f, 0.0), 1.0)),
@@ -718,7 +718,8 @@ with right:
                 placeholder="Where in your life have you substituted activity "
                             "for intimacy with God?",
                 help=f"The application questions asked under {title}. "
-                     "One per line.",
+                     "One per line — or, for a question written over several "
+                     "lines, leave a blank line between questions.",
             )
         divisions.append({
             "title": title,
@@ -726,17 +727,37 @@ with right:
             "applications": applications,
         })
 
+    with st.expander("Scripture read aloud (optional)", expanded=False):
+        scripture = st.text_area(
+            "Passages",
+            height=180,
+            label_visibility="collapsed",
+            placeholder="ROMANS 3:23\n“For all have sinned and fall short of the "
+                        "glory of God.”\n\nROMANS 5:8\n“But God demonstrates his "
+                        "own love for us in this: While we were still sinners, "
+                        "Christ died for us.”",
+            help="Passages you read out word for word. Put the reference on "
+                 "its own line, the verse under it, and a blank line between "
+                 "passages. Each appears on screen from a moment before you "
+                 "start reading it until a moment after you finish — found by "
+                 "matching the words themselves, so it lands to the second.",
+        )
+        _passages = matcher.parse_scripture(scripture)
+        if _passages:
+            st.caption("  ·  ".join(ref for ref, _ in _passages))
+
     _counts = {
-        "takeaway": len([t for t in takeaway.splitlines() if t.strip()]),
+        "takeaway": len(matcher.split_items(takeaway)),
         "divisions": len(division_titles),
         "principles": sum(
-            len([x for x in d["principles"].splitlines() if x.strip()])
+            len(matcher.split_items(d["principles"]))
             for d in divisions
         ),
         "applications": sum(
-            len([x for x in d["applications"].splitlines() if x.strip()])
+            len(matcher.split_items(d["applications"]))
             for d in divisions
         ),
+        "scripture": len(_passages),
     }
     if any(_counts.values()):
         st.caption(
@@ -750,16 +771,15 @@ logo_path = save_upload(logo_file, "logo") or asset_default("logo")
 intro_path = save_upload(intro_file, "intro") or asset_default("intro")
 outro_path = save_upload(outro_file, "outro") or asset_default("outro")
 
-outline = {"takeaway": takeaway, "divisions": divisions}
+outline = {"takeaway": takeaway, "divisions": divisions, "scripture": scripture}
 points = matcher.build_lesson_points(outline)
 
 # Results belong to the outline they were made from. Change a point after
 # analysing and the table would still show the old timings — so the
 # fingerprint of what was analysed is kept, and a change clears the results.
-_fingerprint = repr((
-    [(p.category, p.text, p.division) for p in points],
-    speaker_name.strip(), speaker_title.strip(),
-))
+# The speaker's name is not part of it: the lower third is drawn at render
+# time from whatever is in the box, so changing it needs no re-analysis.
+_fingerprint = repr([(p.category, p.text, p.division) for p in points])
 if st.session_state.get("verdicts") and st.session_state.get("analysed_fingerprint") != _fingerprint:
     st.session_state.update(verdicts=None, matches=None, notes=[], output_path=None)
     st.info("The outline changed since the last analysis — analyse again to refresh the timings.")

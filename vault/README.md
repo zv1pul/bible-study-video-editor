@@ -9,8 +9,8 @@ the app's anonymous usage reports as rows in the sheet.
 
 1. Create a new Google Sheet (sheets.new). Name it "Bible Study Video Editor — keys and usage".
 2. Extensions → Apps Script. Delete what is there, paste in `Code.gs`, save.
-3. Run the `setup` function once (choose `setup` in the toolbar, click Run,
-   approve the permission prompt). This lays out the Settings and Usage tabs.
+3. (Optional) Run the `setup` function once to lay out the tabs now; otherwise
+   they are created automatically the first time the app calls the vault.
 4. Deploy → New deployment → type "Web app":
    - Execute as: **Me**
    - Who has access: **Anyone**
