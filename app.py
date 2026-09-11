@@ -76,9 +76,13 @@ def sweep_old_workdirs(max_age_hours: int = WORKDIR_MAX_AGE_HOURS) -> int:
     root = tempfile.gettempdir()
     cutoff = time.time() - max_age_hours * 3600
     removed = 0
+    # bsve_* folders hold overlays, audio chunks and join lists. They are
+    # deleted when a run finishes, but a run that is killed part way leaves
+    # them behind — forty-odd were found after a day of testing.
+    prefixes = (WORKDIR_PREFIX, "bsve_")
     try:
         for name in os.listdir(root):
-            if not name.startswith(WORKDIR_PREFIX):
+            if not name.startswith(prefixes):
                 continue
             path = os.path.join(root, name)
             try:

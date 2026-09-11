@@ -715,9 +715,19 @@ def _load_local_model(model_size: str, compute_type: str = "int8"):
             _MODEL_CACHE.clear()
             # CPU + int8 is the portable choice: identical behaviour on Mac,
             # Windows and Linux, no GPU or CUDA install required.
-            _MODEL_CACHE[key] = WhisperModel(
-                model_size, device="cpu", compute_type=compute_type
-            )
+            try:
+                _MODEL_CACHE[key] = WhisperModel(
+                    model_size, device="cpu", compute_type=compute_type
+                )
+            except Exception as exc:
+                # The first run downloads the model; without internet that
+                # fails with a wall of library output. Say what happened.
+                raise RuntimeError(
+                    f"The '{model_size}' speech model could not be loaded. The "
+                    "first time it is used it has to be downloaded, so check "
+                    "the internet connection and try again — or switch the "
+                    "transcription engine to Hosted under Advanced settings."
+                ) from exc
         return _MODEL_CACHE[key]
 
 

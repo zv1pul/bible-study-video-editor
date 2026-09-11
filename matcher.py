@@ -1717,7 +1717,7 @@ def match_lesson_points(
     other_keys: Optional[Dict[str, str]] = None,
     use_cache: bool = True,
     pause_seconds: float = APPLICATION_PAUSE_SECONDS,
-    overview_card: bool = True,
+    overview_card: bool = True,   # accepted for compatibility; layout is verifier.lay_out
     progress_cb=None,
 ) -> tuple:
     """

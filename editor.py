@@ -305,6 +305,35 @@ def _is_list(lines: Sequence[str]) -> bool:
     return marked >= max(2, len(lines) // 2)
 
 
+def _fit_text(
+    text: str,
+    size: float,
+    max_width: int,
+    max_height: int,
+    *,
+    bold: bool = False,
+    line_spacing: float = 1.24,
+    min_size: float = 18.0,
+) -> tuple:
+    """
+    Choose the largest type size at which `text` fits the box, wrapping as
+    needed. Returns (font, lines, line_height).
+
+    The alternative — cutting the text off with an ellipsis — is never right
+    for a lesson point: half a principle is worse than a smaller one. So the
+    size steps down until the whole thing fits, with a floor below which it
+    would be unreadable anyway.
+    """
+    size = float(size)
+    while True:
+        font = load_font(size, bold=bold)
+        lines = _wrap(text, font, max_width, max_lines=99)
+        line_h = int(font.size * line_spacing)
+        if len(lines) * line_h <= max_height or size <= min_size:
+            return font, lines, line_h
+        size *= 0.92
+
+
 def make_point_card_image(
     video_w: int,
     video_h: int,
@@ -351,33 +380,54 @@ def make_point_card_image(
     # --- header ------------------------------------------------------------
     top = int(video_h * CARD_HEADER_TOP)
     if header:
-        # Keep the header clear of the reserved logo square.
-        available = video_w - 2 * (CARD_LOGO_MARGIN + logo_box)
-        header_lines = _wrap(header, header_font, max(available, video_w * 0.5), 2)
+        # Keep the header clear of the reserved logo square, and shrink a
+        # long one rather than let it run off the frame.
+        available = max(video_w - 2 * (CARD_LOGO_MARGIN + logo_box), int(video_w * 0.5))
+        header_font, header_lines, header_lh = _fit_text(
+            header, header_font.size, available, int(dh * 0.30),
+            bold=True, line_spacing=1.25, min_size=dh * 0.05,
+        )
         for line in header_lines:
             width = _text_width(line, header_font)
             draw.text(((video_w - width) / 2, top), line, font=header_font,
                       fill=CARD_TEXT)
-            top += int(header_font.size * 1.25)
+            top += header_lh
 
     # --- body --------------------------------------------------------------
     raw_lines = _split_body(body)
     as_list = _is_list(raw_lines)
     # A narrower measure than the frame allows, so lines break into short
     # readable phrases the way the reference cards do.
-    max_body_w = int(video_w * (0.70 if as_list else 0.72))
+    max_body_w = int(video_w * (0.70 if as_list else 0.78))
 
-    lines: List[str] = []
-    for entry in raw_lines:
-        lines.extend(_wrap(entry, body_font, max_body_w, 5))
-
-    line_h = int(body_font.size * 1.24)
-    block_h = len(lines) * line_h
-
-    # Centre the block in the space left under the header.
+    # The space the body may use: under the header, above the countdown.
     region_top = top + int(video_h * 0.04)
-    # A countdown sits under the body, so the text is lifted to make room.
     region_bottom = video_h - int(video_h * (0.10 + max(reserve_bottom, 0.0)))
+    max_body_h = max(region_bottom - region_top, int(dh * 0.2))
+
+    # Shrink to fit rather than cut off. Long questions are common.
+    body_font, lines, line_h = _fit_text(
+        LINE_BREAK.join(raw_lines) if not as_list else "\n".join(raw_lines),
+        body_font.size, max_body_w, max_body_h,
+        bold=False, line_spacing=1.24, min_size=dh * 0.035,
+    ) if not as_list else (body_font, [], int(body_font.size * 1.24))
+    if as_list:
+        # Lists are fitted as a block of separate entries.
+        size = body_font.size
+        while True:
+            body_font = load_font(size, bold=False)
+            lines = []
+            for entry in raw_lines:
+                lines.extend(_wrap(entry, body_font, max_body_w, 99))
+            line_h = int(body_font.size * 1.24)
+            if len(lines) * line_h <= max_body_h or size <= dh * 0.035:
+                break
+            size *= 0.92
+    else:
+        # _fit_text saw the pipes as words; wrap the real text instead.
+        lines = _wrap(" ".join(raw_lines), body_font, max_body_w, 99)
+
+    block_h = len(lines) * line_h
     y = region_top + max((region_bottom - region_top - block_h) // 2, 0)
 
     if as_list:
@@ -1003,7 +1053,7 @@ def _with_fade(clip, seconds: float):
 
 
 def _overlay_specs(
-    video_path: str,
+    video_path: str,          # kept for signature stability; not read here
     width: int,
     height: int,
     duration: float,
