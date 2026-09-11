@@ -313,3 +313,106 @@ def report_async(event: str, **fields) -> None:
     threading.Thread(
         target=lambda: report(event, **fields), daemon=True
     ).start()
+
+
+# --------------------------------------------------------------------------
+# Shared keys
+# --------------------------------------------------------------------------
+#
+# Nobody using a packaged copy should have to find an API key. Instead the
+# app asks a small "vault" — a Google Apps Script in front of a Google Sheet
+# (see vault/Code.gs) — for the group's shared keys, once, after the person
+# types the group code. The keys are cached on this computer and refreshed
+# quietly about once a day, or immediately if one stops working.
+#
+# The vault's address comes from control.json ("vault_url"), with the
+# constant below as a fallback, so it can be moved without a release.
+
+VAULT_URL = ""
+KEYS_CACHE_HOURS = 24
+VAULT_TIMEOUT = 10
+
+
+def vault_url() -> str:
+    return str(fetch_control().get("vault_url", "") or VAULT_URL)
+
+
+def group_code() -> str:
+    return str(settings().get("group_code", "") or "")
+
+
+def set_group_code(code: str) -> None:
+    set_setting("group_code", code.strip())
+    _write_json(_state_path("keys_cache.json"), {})
+
+
+def shared_keys(force: bool = False) -> Dict[str, str]:
+    """
+    The shared API keys, from cache when fresh, else from the vault.
+
+    Empty when there is no vault, no group code, or the vault cannot be
+    reached and nothing is cached — never an exception.
+    """
+    cache_path = _state_path("keys_cache.json")
+    cached = _read_json(cache_path, {}) or {}
+    fresh = cached.get("fetched_at", 0) > time.time() - KEYS_CACHE_HOURS * 3600
+    if cached.get("keys") and fresh and not force:
+        return dict(cached["keys"])
+
+    ok, keys, _ = connect(group_code())
+    if ok:
+        return keys
+    return dict(cached.get("keys") or {})
+
+
+def connect(code: str) -> tuple:
+    """
+    Ask the vault for the keys. (ok, keys, message).
+
+    Saves them on success so that the next launch does not need the vault
+    at all.
+    """
+    url = vault_url()
+    if not url:
+        return False, {}, "This copy has no shared-key vault configured."
+    code = (code or "").strip()
+    if not code:
+        return False, {}, "Enter the group code first."
+    try:
+        response = requests.get(
+            url,
+            params={
+                "code": code,
+                "install": install_id(),
+                "version": VERSION,
+                "platform": platform.system(),
+            },
+            timeout=VAULT_TIMEOUT,
+        )
+        data = response.json()
+    except Exception:
+        return False, {}, (
+            "Could not reach the group's key vault. Check the internet "
+            "connection and try again."
+        )
+    if not data.get("ok"):
+        return False, {}, str(data.get("message") or "The vault said no.")
+    keys = {
+        k: str(v or "").strip()
+        for k, v in (data.get("keys") or {}).items()
+        if str(v or "").strip()
+    }
+    if not keys:
+        return False, {}, (
+            "The vault answered, but no keys are filled in on the Settings "
+            "tab yet."
+        )
+    _write_json(
+        _state_path("keys_cache.json"),
+        {"fetched_at": int(time.time()), "keys": keys},
+    )
+    return True, keys, "Connected."
+
+
+def forget_keys() -> None:
+    _write_json(_state_path("keys_cache.json"), {})

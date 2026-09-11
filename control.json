@@ -5,5 +5,6 @@
   "message_kind": "info",
   "release_notes": "",
   "telemetry_url": "",
-  "settings": {}
+  "settings": {},
+  "vault_url": ""
 }

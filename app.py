@@ -197,13 +197,31 @@ def save_upload(upload, name: str) -> str:
 
 
 def secret(name: str) -> str:
-    """Read a key from st.secrets or the environment, if one was configured."""
+    """
+    Read a key: st.secrets, then the environment, then the group's shared
+    keys (fetched once with the group code and cached on this computer).
+    """
     try:
         if name in st.secrets:
             return str(st.secrets[name])
     except Exception:
         pass
-    return os.environ.get(name, "")
+    if os.environ.get(name):
+        return os.environ[name]
+    return control.shared_keys().get(name, "")
+
+
+def has_own_keys() -> bool:
+    """True when keys were configured directly (secrets or environment)."""
+    for name in ("GEMINI_API_KEY", "GROQ_API_KEY"):
+        try:
+            if name in st.secrets:
+                return True
+        except Exception:
+            pass
+        if os.environ.get(name):
+            return True
+    return False
 
 
 # --------------------------------------------------------------------------
@@ -422,6 +440,21 @@ with st.sidebar:
     st.divider()
     st.subheader("About this copy")
     st.caption(f"Version {control.VERSION}")
+    if control.vault_url() and not has_own_keys():
+        if control.shared_keys():
+            st.caption("🔑 Connected to the group's shared keys")
+        with st.expander("Group code"):
+            _new_code = st.text_input(
+                "Group code", value=control.group_code(), type="password",
+                help="The word your group was given. It connects this copy "
+                     "to the shared AI keys so nobody needs their own.",
+            )
+            if st.button("Reconnect", width="stretch"):
+                control.set_group_code(_new_code)
+                _ok, _, _note = control.connect(_new_code)
+                (st.success if _ok else st.error)(_note)
+                if _ok:
+                    st.rerun()
     if st.button("Check for updates", width="stretch"):
         control.fetch_control(force=True)
         st.rerun()
@@ -495,6 +528,34 @@ elif _status["update_available"]:
             with st.spinner("Updating…"):
                 ok, note = control.apply_update()
             (st.success if ok else st.error)(note)
+
+# First run of a packaged copy: no keys anywhere yet. One box, one word.
+if (
+    control.vault_url()
+    and not has_own_keys()
+    and not control.shared_keys()
+):
+    with st.container(border=True):
+        st.markdown("**One-time setup — enter your group code**")
+        st.caption(
+            "This connects your copy to the group's shared AI keys, so you "
+            "never need an API key of your own. Ask whoever gave you the app "
+            "for the code."
+        )
+        _cols = st.columns([3, 1])
+        _code = _cols[0].text_input(
+            "Group code", value=control.group_code(), type="password",
+            label_visibility="collapsed", placeholder="Group code",
+        )
+        if _cols[1].button("Connect", width="stretch", type="primary"):
+            control.set_group_code(_code)
+            _ok, _, _note = control.connect(_code)
+            if _ok:
+                st.success(_note)
+                st.rerun()
+            else:
+                st.error(_note)
+        st.stop()
 
 if HOSTED:
     st.info(
@@ -910,7 +971,18 @@ if st.button("🔍 Analyse recording", type="primary", disabled=not ready, width
                 engine=engine,
             )
     except Exception as exc:
-        st.error(f"Something went wrong: {exc}")
+        if getattr(exc, "is_auth_failure", False) and not has_own_keys():
+            # A shared key was rotated: fetch the new one and say so.
+            _ok, _, _ = control.connect(control.group_code())
+            st.error(
+                "The shared AI key was rejected. "
+                + ("A fresh key has been fetched — click Analyse again."
+                   if _ok else
+                   "Could not fetch a fresh one; check the group code in "
+                   "the sidebar.")
+            )
+        else:
+            st.error(f"Something went wrong: {exc}")
         with st.expander("Technical details"):
             st.code(traceback.format_exc())
 
