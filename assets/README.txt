@@ -1,8 +1,8 @@
 Drop your series artwork in here and the app uses it automatically — no need
 to upload it again each session, and it travels with the app when deployed.
 
-  intro.png   shown for 5 seconds at the very start   (e.g. the "Exile & Return
-              — A Time to Build" title slide)
+  intro.png   shown for 5 seconds at the very start   (currently the "Romans —
+              From Guilt to Grace" poster; the earlier series art is in previous/)
   outro.png   shown for 5 seconds at the very end
   logo.png    placed in the reserved 120x120 square on every point card
 
