@@ -224,6 +224,50 @@ def has_own_keys() -> bool:
     return False
 
 
+def cues_from_table(edited, plans, discussion_seconds: float, caption_seconds: float):
+    """
+    Turn the (possibly edited) timings table into render cues.
+
+    `plans` maps a point's text to its analysed Element, which carries the
+    things the table does not show — the pause position, the cut, the
+    overview's division list. A row's own "Discussion (s)" overrides the
+    sidebar's discussion time for that one question.
+    """
+    active = edited[edited["Show"].fillna(False).astype(bool)]
+    cues = []
+    for _, row in active.iterrows():
+        start = float(row["Start (s)"])
+        end = float(row["End (s)"])
+        span = end - start
+        wants_timer = bool(row.get("Timer", False))
+        plan = plans.get(str(row["Point"]))
+        own = row.get("Discussion (s)")
+        timer_seconds = discussion_seconds
+        try:
+            digits = "".join(ch for ch in str(own or "") if ch.isdigit() or ch == ".")
+            if digits and 1.0 <= float(digits) <= 600.0:
+                timer_seconds = float(digits)
+        except (TypeError, ValueError):
+            pass
+        cues.append(
+            editor.Cue(
+                text=str(row["Point"]),
+                start=start,
+                label=str(row.get("Header") or "").strip(),
+                duration=span if span > 0.05 else caption_seconds,
+                has_timer=wants_timer,
+                timer_duration=timer_seconds if wants_timer else 0.0,
+                pause_at=(float(plan.pause_at) if plan and wants_timer else 0.0)
+                         or (end if wants_timer else 0.0),
+                cut_start=float(plan.cut_start) if plan and wants_timer else 0.0,
+                cut_end=float(plan.cut_end) if plan and wants_timer else 0.0,
+                items=list(plan.items) if plan else [],
+                kind=(plan.type if plan else ""),
+            )
+        )
+    return cues
+
+
 # --------------------------------------------------------------------------
 # Sidebar: settings
 # --------------------------------------------------------------------------
@@ -239,7 +283,8 @@ with st.sidebar:
         help="A countdown of this length follows every application question. "
              "The speaker's own wait in the recording, however long, is cut "
              "out and replaced by it, so the video moves straight on to where "
-             "they resume.",
+             "they resume. To give one question a different time, change its "
+             "'Discussion (s)' in the timings table after analysing.",
     )
     quality = st.selectbox(
         "Video quality",
@@ -727,7 +772,8 @@ with right:
             "applications": applications,
         })
 
-    with st.expander("Scripture read aloud (optional)", expanded=False):
+    with st.expander("Scripture read aloud — shown on screen as you read it (optional)",
+                     expanded=False):
         scripture = st.text_area(
             "Passages",
             height=180,
@@ -1053,11 +1099,11 @@ if st.session_state.verdicts:
                     max(v.match.end_time - v.match.start_time, 0)
                 ),
                 "Timer": bool(v.match.has_timer),
-                "Pause": (
-                    f"{v.match.timer_duration:.0f}s"
-                    + (f" (cuts {v.match.cut_end - v.match.cut_start:.0f}s wait)"
-                       if v.match.cut_end > v.match.cut_start else "")
-                    if v.match.has_timer else "—"
+                # Every application gets the sidebar's discussion time unless
+                # a different number is typed here for that one question.
+                "Discussion (s)": (
+                    f"{int(discussion_seconds)}" if v.match.type == "application"
+                    else ""                     # blank for anything that is not a question
                 ),
                 "Heard": v.match.evidence,
                 "Why": v.reason_text,
@@ -1097,10 +1143,12 @@ if st.session_state.verdicts:
                      "automatically when a long enough silence was measured "
                      "in the audio; untick to hide the countdown.",
             ),
-            "Pause": st.column_config.TextColumn(
-                "Pause", disabled=True, width="small",
-                help="Discussion time inserted after the question, and how "
-                     "much of the speaker's own wait it replaces.",
+            "Discussion (s)": st.column_config.TextColumn(
+                "Discussion (s)", width="small", max_chars=4,
+                help="How long the countdown runs after this question, in "
+                     "seconds. Starts at the sidebar's discussion time; type "
+                     "a different number to change it for this one question "
+                     "only.",
             ),
             "Heard": st.column_config.TextColumn("What the speaker said", disabled=True),
             "Why": st.column_config.TextColumn("Checks", disabled=True, width="medium"),
@@ -1108,31 +1156,10 @@ if st.session_state.verdicts:
         key="matches_editor",
     )
 
-    active = edited[edited["Show"].fillna(False).astype(bool)]
-    plans = {v.match.text: v.match for v in verdicts}
-    requested = []
-    for _, row in active.iterrows():
-        start = float(row["Start (s)"])
-        end = float(row["End (s)"])
-        span = end - start
-        wants_timer = bool(row.get("Timer", False))
-        plan = plans.get(str(row["Point"]))
-        requested.append(
-            editor.Cue(
-                text=str(row["Point"]),
-                start=start,
-                label=str(row.get("Header") or "").strip(),
-                duration=span if span > 0.05 else float(caption_seconds),
-                has_timer=wants_timer,
-                timer_duration=float(discussion_seconds) if wants_timer else 0.0,
-                pause_at=(float(plan.pause_at) if plan and wants_timer else 0.0)
-                         or (end if wants_timer else 0.0),
-                cut_start=float(plan.cut_start) if plan and wants_timer else 0.0,
-                cut_end=float(plan.cut_end) if plan and wants_timer else 0.0,
-                items=list(plan.items) if plan else [],
-                kind=(plan.type if plan else ""),
-            )
-        )
+    requested = cues_from_table(
+        edited, {v.match.text: v.match for v in verdicts},
+        float(discussion_seconds), float(caption_seconds),
+    )
 
     # The real schedule: overlaps trimmed, points matched to the same moment
     # queued one after another, anything past the end of the video dropped.
