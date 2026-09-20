@@ -19,6 +19,7 @@ from a plain script.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
@@ -473,6 +474,38 @@ def silence_threshold_for(media_path: str) -> int:
     return int(max(-50.0, min(threshold, -18.0)))
 
 
+def transcript_words(segments: Sequence["Segment"]) -> List[Dict[str, float]]:
+    """
+    Every word with its own start, end and confidence, in order.
+
+    Word timestamps are the honest record of when somebody was speaking.
+    Segment boundaries are not: over a long silence Whisper often emits one
+    segment that starts with the last words before the pause and ends with
+    the first words after it, so the pause disappears from the segment
+    times entirely. Without word timestamps the words are spread evenly
+    across their segment, which is the best that can be done.
+    """
+    out: List[Dict[str, float]] = []
+    for segment in segments:
+        words = segment.get("words") or []
+        if words:
+            for w in words:
+                out.append({
+                    "start": float(w["start"]), "end": float(w["end"]),
+                    "word": str(w.get("word", "")), "p": float(w.get("p", 1.0)),
+                })
+        else:
+            tokens = str(segment["text"]).split()
+            if not tokens:
+                continue
+            start, end = float(segment["start"]), float(segment["end"])
+            step = max(end - start, 0.1) / len(tokens)
+            for i, token in enumerate(tokens):
+                out.append({"start": start + i * step, "end": start + (i + 1) * step,
+                            "word": token, "p": 1.0})
+    return out
+
+
 def silences_from_transcript(
     segments: Sequence["Segment"],
     min_seconds: float = 15.0,
@@ -481,20 +514,59 @@ def silences_from_transcript(
     Find the quiet stretches from the transcript instead of the waveform.
 
     Whisper runs with voice-activity detection, so it simply produces no
-    segment where nobody is speaking. A long gap between one segment ending
-    and the next beginning therefore means silence — and unlike a decibel
+    words where nobody is speaking. A long gap between one word ending and
+    the next beginning therefore means silence — and unlike a decibel
     threshold, that holds however noisy the room is.
     """
+    words = transcript_words(segments)
     gaps: List[Dict[str, float]] = []
-    for earlier, later in zip(segments, segments[1:]):
-        gap = float(later["start"]) - float(earlier["end"])
+    for earlier, later in zip(words, words[1:]):
+        gap = later["start"] - earlier["end"]
         if gap >= min_seconds:
             gaps.append({
-                "start": round(float(earlier["end"]), 2),
-                "end": round(float(later["start"]), 2),
+                "start": round(earlier["end"], 2),
+                "end": round(later["start"], 2),
                 "duration": round(gap, 2),
             })
     return gaps
+
+
+def speech_runs(
+    segments: Sequence["Segment"], max_gap: float = 2.0
+) -> List[Dict[str, float]]:
+    """
+    Stretches of continuous speech: words separated by less than `max_gap`.
+
+    Each run carries its word count and the average word confidence, which
+    is what tells a teacher addressing the room (long runs, confident words)
+    from an audience talking among themselves (fragments, low confidence).
+    """
+    runs: List[Dict[str, float]] = []
+    for w in transcript_words(segments):
+        if runs and w["start"] - runs[-1]["end"] < max_gap:
+            run = runs[-1]
+            run["end"] = max(run["end"], w["end"])
+            run["words"] += 1
+            run["p_sum"] += w["p"]
+        else:
+            runs.append({"start": w["start"], "end": w["end"], "words": 1, "p_sum": w["p"]})
+    for run in runs:
+        run["p"] = run["p_sum"] / max(run["words"], 1)
+        del run["p_sum"]
+    return runs
+
+
+def speech_stats(
+    segments: Sequence["Segment"], start: float, end: float
+) -> Dict[str, float]:
+    """Words, words per second and mean confidence spoken inside a window."""
+    inside = [w for w in transcript_words(segments) if w["start"] >= start and w["end"] <= end]
+    span = max(end - start, 0.1)
+    return {
+        "words": len(inside),
+        "rate": len(inside) / span,
+        "p": (sum(w["p"] for w in inside) / len(inside)) if inside else 0.0,
+    }
 
 
 def merge_silences(*sources: Sequence[Dict[str, float]]) -> List[Dict[str, float]]:
@@ -805,6 +877,10 @@ def _decode(model, audio_path, language, word_timestamps, progress_cb, total):
                     "start": float(w.start),
                     "end": float(w.end),
                     "word": (w.word or "").strip(),
+                    # How sure the model was of this word. Overlapping
+                    # voices — an audience discussing — score far lower
+                    # than one teacher speaking clearly.
+                    "p": round(float(getattr(w, "probability", 1.0) or 0.0), 2),
                 }
                 for w in segment.words
                 if w.start is not None and w.end is not None
@@ -924,11 +1000,20 @@ def _transcribe_groq(
                     continue
                 start = float(segment.get("start", 0.0))
                 end = float(segment.get("end", 0.0))
+                # The hosted service gives no per-word confidence; the
+                # segment's average log-probability is the same signal at a
+                # coarser grain, and it still separates the room from the
+                # teacher.
+                try:
+                    confidence = round(math.exp(float(segment.get("avg_logprob", 0.0))), 2)
+                except (TypeError, ValueError, OverflowError):
+                    confidence = 1.0
                 words = [
                     {
                         "start": float(w.get("start", 0.0)) + offset,
                         "end": float(w.get("end", 0.0)) + offset,
                         "word": (w.get("word") or "").strip(),
+                        "p": confidence,
                     }
                     for w in words_all
                     if start <= float(w.get("start", -1)) <= end

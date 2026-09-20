@@ -36,6 +36,7 @@ import requests
 
 from transcriber import (
     Segment, format_timestamp, format_transcript, find_silence_after,
+    speech_runs, speech_stats,
 )
 
 # --------------------------------------------------------------------------
@@ -130,6 +131,16 @@ OVERVIEW_MAX_SECONDS = 45.0
 
 # Discussion time inserted after every application question, in seconds.
 APPLICATION_PAUSE_SECONDS = 30.0
+
+# Telling the teacher from the room. After a question the recording may run
+# on through silence, or through an audience talking among themselves; both
+# are dead time and both are cut. The teacher is back when speech becomes
+# sustained (this many words within RESUME_WINDOW seconds) AND confidently
+# transcribed — overlapping voices score well below a single clear speaker.
+RESUME_WINDOW = 10.0
+RESUME_MIN_WORDS = 12
+RESUME_MIN_CONFIDENCE = 0.80
+CHATTER_MAX_CONFIDENCE = 0.75    # a stretch this unsure is not the teacher
 # A gap in speech this long after a question is the speaker waiting, and is
 # what gets replaced by the fixed block above.
 APPLICATION_GAP_MIN = 6.0
@@ -199,6 +210,9 @@ class Element:
     pause_at: float = 0.0
     cut_start: float = 0.0
     cut_end: float = 0.0
+    # Where the model thinks the teacher resumes after the discussion. A
+    # hint only: detect_pauses checks it against the audio before using it.
+    resume_time: float = 0.0
 
     # Overview card: the divisions listed beneath the takeaway.
     items: List[str] = field(default_factory=list)
@@ -245,6 +259,8 @@ class Element:
             payload["timer_duration"] = (
                 int(round(self.timer_duration)) if self.has_timer else 0
             )
+            if self.resume_time:
+                payload["resume_time"] = round(self.resume_time, 2)
             if self.pause_at:
                 payload["pause_at"] = round(self.pause_at, 2)
             if self.cut_end > self.cut_start:
@@ -431,6 +447,29 @@ def _tidy_reference(line: str) -> str:
         else:
             out.append(word[:1].upper() + word[1:].lower())
     return " ".join(out)
+
+
+def split_divisions(text) -> List[str]:
+    """
+    One division per line — except that a line holding only a scripture
+    reference ("Romans 1:1–7") belongs to the division above it, so an
+    outline pasted as
+
+        DIVISION 1 — GOSPEL CLAIM
+        Romans 1:1–7
+
+    gives one division, "DIVISION 1 — GOSPEL CLAIM (Romans 1:1–7)".
+    """
+    titles: List[str] = []
+    for raw in str(text or "").replace("\r", "").split("\n"):
+        line = raw.strip().strip("⸻—-–_ ").strip()
+        if not line:
+            continue
+        if titles and looks_like_reference(line) and "(" not in titles[-1]:
+            titles[-1] = f"{titles[-1]} ({_tidy_reference(line)})"
+        else:
+            titles.append(line)
+    return titles
 
 
 def parse_scripture(value) -> List[tuple]:
@@ -751,14 +790,20 @@ not the announcement of the reference. end_time is when the LAST word of the
 passage is spoken. evidence is the passage's opening words as transcribed.
 
 FINDING THE END — applications
-The slide starts as the question is introduced or read.
-Look at MEASURED SILENCES above:
-- If a silence of {TIMER_MIN_SILENCE:.0f} seconds or more begins just after the
-  question finishes, that is reflection time. Set has_timer true, set
-  timer_duration to the length of that silence in seconds, and set end_time to
-  the moment speech resumes (the end of the silence).
-- If there is no such silence, set has_timer false, timer_duration 0, and set
-  end_time to 2 seconds after the question finishes being read.
+The slide starts as the question is introduced or read. end_time is the
+moment the question has been read for the LAST time (teachers often repeat
+it, and may add "three minutes" or similar) — the last word of the question.
+
+resume_time is the moment the TEACHER next addresses the whole room after
+the question. Between end_time and resume_time there may be nothing but
+silence, or there may be an audience talking among themselves — overlapping
+voices, fragments, people giving their own answers to the question. All of
+that is discussion time, not teaching: skip past it. resume_time is where
+the teacher's own voice takes over again, usually with a transition such as
+"let's come back together", "okay", or the next division. If the teacher
+simply carries on teaching straight after the question, resume_time equals
+end_time. Never place resume_time later than the next outline point.
+Set has_timer true and timer_duration to resume_time minus end_time.
 
 RULES
 1. Match on meaning. The speaker will phrase things differently from the
@@ -789,8 +834,8 @@ from the outline so we can match your answer back:
     "evidence": "that brings us to our first principle"}},
   {{"id": "application_1", "type": "application", "header": "Application",
     "content": "Where have you substituted activity for intimacy with God?",
-    "start_time": 624.0, "end_time": 658.0, "has_timer": true,
-    "timer_duration": 30, "confidence": 0.8, "evidence": "so here is our application question"}}
+    "start_time": 624.0, "end_time": 640.0, "resume_time": 812.0, "has_timer": true,
+    "timer_duration": 172, "confidence": 0.8, "evidence": "so here is our application question"}}
 ]}}
 """
 
@@ -817,6 +862,7 @@ RESPONSE_SCHEMA = {
                     "end_time": {"type": "number"},
                     "has_timer": {"type": "boolean"},
                     "timer_duration": {"type": "number"},
+                    "resume_time": {"type": "number"},
                     "confidence": {"type": "number"},
                     "evidence": {"type": "string"},
                 },
@@ -1680,45 +1726,155 @@ def _readable_seconds(text: str) -> float:
     return max(READ_MIN_SECONDS, min(READ_MAX_SECONDS, words * READ_SECONDS_PER_WORD + 3.0))
 
 
+def find_dead_time(
+    segments: Sequence[Segment],
+    after: float,
+    limit: float,
+    *,
+    min_seconds: float = APPLICATION_GAP_MIN,
+    hint: float = 0.0,
+) -> Optional[tuple]:
+    """
+    The stretch after a question in which the teacher is not teaching.
+
+    (cut_start, cut_end, kind) or None. It begins when the words of the
+    question run out and ends when the teacher addresses the room again —
+    skipping silence, and skipping an audience discussing the question
+    among themselves — but never runs past `limit`, the start of the next
+    outline point.
+
+    The teacher is recognised by sustained, confidently transcribed speech.
+    A `hint` from the language model (its guess at where the teacher
+    resumes) may push the end later, but only when everything between is
+    transcribed with the low confidence of overlapping voices.
+    """
+    runs = speech_runs(segments, max_gap=2.0)
+    if not runs:
+        return None
+
+    # The bars are relative to how clearly THIS recording was transcribed:
+    # a teacher on a poor microphone must still count as the teacher.
+    long_runs = sorted(r["p"] for r in runs if r["words"] >= RESUME_MIN_WORDS)
+    baseline = long_runs[len(long_runs) // 2] if long_runs else 1.0
+    teacher_bar = min(RESUME_MIN_CONFIDENCE, baseline - 0.08)
+    chatter_bar = min(CHATTER_MAX_CONFIDENCE, baseline - 0.12)
+
+    def sustained(index: int) -> bool:
+        run = runs[index]
+        words = sum(r["words"] for r in runs[index:]
+                    if r["start"] < run["start"] + RESUME_WINDOW)
+        return words >= RESUME_MIN_WORDS and run["p"] >= teacher_bar
+
+    # The question's own words end the run they are in. If `after` lands in
+    # a quiet stretch instead, the dead time began when that quiet did.
+    cut_start = after
+    for run in runs:
+        if run["start"] - 1.0 <= after <= run["end"] + 0.5:
+            cut_start = max(after, run["end"])
+            break
+    else:
+        before = [r["end"] for r in runs if r["end"] <= after]
+        if before:
+            cut_start = max(before)
+
+    # A limit that falls inside silence loses nothing by moving to where
+    # speech actually resumes — the next point is snapped there later anyway.
+    quiet_until = next((r["start"] for r in runs if r["start"] > limit), limit)
+    if not any(r["start"] <= limit <= r["end"] + 0.5 for r in runs):
+        limit = quiet_until
+
+    cut_end = cut_start
+    kind = "silence"
+    for index, run in enumerate(runs):
+        if run["start"] <= cut_start + 0.5:
+            continue
+        if run["start"] >= limit:
+            cut_end = limit
+            break
+        if sustained(index):
+            cut_end = run["start"]
+            break
+        kind = "discussion"           # fragments of talk: the room, not the teacher
+    else:
+        cut_end = limit
+
+    # The model may know better where the teacher came back — say, an
+    # audience whose chatter was transcribed as fluently as the teacher.
+    if hint and cut_end + 3.0 < hint <= limit + 2.0:
+        between = speech_stats(segments, cut_end, min(hint, limit))
+        if between["words"] == 0 or between["p"] < chatter_bar:
+            landing = min(hint, limit)
+            for run in runs:                      # snap to where speech starts
+                if abs(run["start"] - landing) <= 3.0:
+                    landing = run["start"]
+                    break
+            cut_end, kind = landing, "discussion"
+
+    if cut_end - cut_start < min_seconds:
+        return None
+    return round(cut_start, 2), round(min(cut_end, limit), 2), kind
+
+
 def detect_pauses(
     elements: Sequence[Element],
     silences: Sequence[dict],
     pause_seconds: float = APPLICATION_PAUSE_SECONDS,
+    segments: Sequence[Segment] = (),
+    duration: float = 0.0,
 ) -> List[str]:
     """
-    For every application, find the speaker's wait and plan the block.
+    For every application, find the dead time after it and plan the block.
 
     Records where the discussion block goes (pause_at) and what stretch of
-    the recording it replaces (cut_start..cut_end). These are facts about the
-    audio and do not move; the layout step may slide pause_at later, but only
-    within the wait.
+    the recording it replaces (cut_start..cut_end) — the speaker waiting,
+    or the room discussing, up to where the teacher resumes. These are facts
+    about the audio and do not move; the layout step may slide pause_at
+    later, but only within the wait.
     """
     notes: List[str] = []
     silences = list(silences or [])
+    ordered = sorted(
+        (e for e in elements if e.type != "lower_third"), key=lambda e: e.start_time
+    )
     for element in elements:
         if element.type != "application":
             element.has_timer = False
             element.timer_duration = 0.0
             continue
         anchor = element.end_time if element.end_time > element.start_time else element.start_time
-        gap = find_silence_after(
-            silences, anchor, within=15.0, min_duration=APPLICATION_GAP_MIN
-        ) or find_silence_after(
-            silences, element.start_time, within=90.0, min_duration=APPLICATION_GAP_MIN
-        )
-        if gap:
-            element.pause_at = float(gap["start"])
-            element.cut_start = float(gap["start"])
-            element.cut_end = float(gap["end"])
+        following = [e.start_time for e in ordered
+                     if e is not element and e.start_time > anchor + 1.0]
+        limit = min(following) if following else (duration or float("inf"))
+
+        if segments:
+            dead = find_dead_time(segments, anchor, limit, hint=element.resume_time)
+        else:
+            # No transcript to go on: fall back to the measured silences.
+            dead = None
+            gap = find_silence_after(
+                silences, anchor, within=15.0, min_duration=APPLICATION_GAP_MIN
+            ) or find_silence_after(
+                silences, element.start_time, within=90.0, min_duration=APPLICATION_GAP_MIN
+            )
+            if gap and min(gap["end"], limit) - gap["start"] >= APPLICATION_GAP_MIN:
+                dead = (float(gap["start"]), float(min(gap["end"], limit)), "silence")
+
+        if dead:
+            cut_start, cut_end, kind = dead
+            element.pause_at = cut_start
+            element.cut_start = cut_start
+            element.cut_end = cut_end
+            what = "wait" if kind == "silence" else "discussion in the room"
             element.notes.append(
-                f"The speaker's {gap['duration']:.0f}s wait is replaced by "
-                f"{pause_seconds:.0f}s of discussion time."
+                f"{format_timestamp(cut_end - cut_start)} of {what} is cut and "
+                f"replaced by {pause_seconds:.0f}s of discussion time; the video "
+                f"resumes at {format_timestamp(cut_end)}."
             )
         else:
             element.pause_at = float(anchor)
             element.notes.append(
-                f"No pause was found after the question, so {pause_seconds:.0f}s "
-                "of discussion time is inserted where it ends."
+                f"The speaker carried straight on, so {pause_seconds:.0f}s of "
+                "discussion time is inserted where the question ends."
             )
         element.end_time = element.pause_at
         element.has_timer = True
@@ -1826,7 +1982,11 @@ def layout_timeline(
         card.end_time = card.start_time + need
 
         if card.type == "application" and card.has_timer:
-            earliest = card.start_time + readable(card)
+            # The question stays up through the whole discussion block, so
+            # it needs no reading time of its own before the block begins —
+            # the block IS the reading time, unless it is very short.
+            lead = readable(card) if card.timer_duration < readable(card) else 1.0
+            earliest = card.start_time + lead
             if card.pause_at < earliest:
                 if card.cut_end > card.cut_start:
                     card.pause_at = min(earliest, card.cut_end - 1.0)
@@ -2026,7 +2186,8 @@ def match_lesson_points(
         # Laying the cards out is done AFTER verification — see layout_timeline
         # — because verification snaps start times, and the layout must be the
         # last thing to touch them.
-        notes.extend(detect_pauses(elements, silences, pause_seconds))
+        notes.extend(detect_pauses(elements, silences, pause_seconds,
+                                   segments=segments, duration=duration))
         if include_lower_third and (speaker.strip() or speaker_title.strip()):
             elements = [lower_third_element(speaker, speaker_title)] + elements
         return elements, notes, model_used
@@ -2195,6 +2356,7 @@ def _elements_from_payload(
                 end_time=float(end) if end is not None else 0.0,
                 has_timer=bool(item.get("has_timer", False)),
                 timer_duration=float(_parse_time(item.get("timer_duration")) or 0.0),
+                resume_time=float(_parse_time(item.get("resume_time")) or 0.0),
                 id=point.id,
                 confidence=max(0.0, min(confidence, 1.0)),
                 evidence=str(item.get("evidence", ""))[:200],

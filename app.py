@@ -734,10 +734,12 @@ with right:
         height=110,
         placeholder="I. Man-initiated Religion (Zechariah 7)\n"
                     "II. God-Initiated Relationship (Zechariah 8)",
-        help="Type each division on its own line. Sections for its principles "
-             "and applications appear below as you add them.",
+        help="Type each division on its own line. A scripture reference on the "
+             "line under a division (\"Romans 1:1–7\") is added to that "
+             "division. Sections for its principles and applications appear "
+             "below as you add them.",
     )
-    division_titles = [line.strip() for line in divisions_raw.splitlines() if line.strip()]
+    division_titles = matcher.split_divisions(divisions_raw)
 
     divisions: list = []
     if not division_titles:
@@ -1105,6 +1107,12 @@ if st.session_state.verdicts:
                     f"{int(discussion_seconds)}" if v.match.type == "application"
                     else ""                     # blank for anything that is not a question
                 ),
+                "Cut": (
+                    f"{transcriber.format_timestamp(v.match.cut_end - v.match.cut_start)} "
+                    f"removed, resumes {transcriber.format_timestamp(v.match.cut_end)}"
+                    if v.match.type == "application" and v.match.cut_end > v.match.cut_start
+                    else ""
+                ),
                 "Heard": v.match.evidence,
                 "Why": v.reason_text,
             }
@@ -1142,6 +1150,12 @@ if st.session_state.verdicts:
                 help="Show a countdown during the reflection pause. Ticked "
                      "automatically when a long enough silence was measured "
                      "in the audio; untick to hide the countdown.",
+            ),
+            "Cut": st.column_config.TextColumn(
+                "Cut", disabled=True, width="medium",
+                help="Dead time after the question — silence, or the room "
+                     "discussing — that is removed and replaced by the "
+                     "countdown. The video picks up where the teacher resumes.",
             ),
             "Discussion (s)": st.column_config.TextColumn(
                 "Discussion (s)", width="small", max_chars=4,
