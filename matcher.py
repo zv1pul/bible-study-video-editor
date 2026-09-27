@@ -427,7 +427,7 @@ def _points_from_structured(outline: dict) -> List[LessonPoint]:
 # "Romans 3:21–22", "1 John 4:8", "Psalm 23", "EXODUS 20:3", "Song of Songs 2:1"
 _REFERENCE = re.compile(
     r"^\s*(?:[1-3]\s*)?[A-Za-z]+(?:\s+(?:of\s+)?[A-Za-z]+){0,3}\s+\d{1,3}"
-    r"(?::\d{1,3}(?:\s*[-–—]\s*\d{1,3}(?::\d{1,3})?)?)?\s*$"
+    r"(?:\s*:\s*\d{1,3}(?:\s*[-–—]\s*\d{1,3}(?:\s*:\s*\d{1,3})?)?)?\s*$"
 )
 
 
@@ -437,6 +437,8 @@ def looks_like_reference(line: str) -> bool:
 
 def _tidy_reference(line: str) -> str:
     """"EXODUS 20:3" -> "Exodus 20:3"; keeps "1 John" and "of" as they should be."""
+    # "Romans 1: 21-27" and "Romans 1 : 21 - 27" are the same reference.
+    line = re.sub(r"\s*([:\-–—])\s*", r"\1", line.strip())
     words = line.strip().split()
     out = []
     for word in words:
@@ -462,7 +464,9 @@ def split_divisions(text) -> List[str]:
     """
     titles: List[str] = []
     for raw in str(text or "").replace("\r", "").split("\n"):
-        line = raw.strip().strip("⸻—-–_ ").strip()
+        # Tabs and runs of spaces come from pasted outlines; they would be
+        # drawn literally on the card.
+        line = " ".join(raw.split()).strip("⸻—-–_ ").strip()
         if not line:
             continue
         if titles and looks_like_reference(line) and "(" not in titles[-1]:
@@ -1691,6 +1695,53 @@ def locate_quote(segments: Sequence[Segment], text: str) -> Optional[tuple]:
     return words[first][1], words[last][2], round(ratio, 3)
 
 
+def quote_occurrences(
+    segments: Sequence[Segment], text: str, *, min_ratio: float = 0.82,
+    max_results: int = 4,
+) -> List[tuple]:
+    """
+    Every place the words of `text` are spoken: [(start, end, ratio), ...],
+    closest match first.
+
+    Used to check a model's supporting quote against the recording. A model
+    may quote the right line and still report the wrong number of seconds —
+    the words are the evidence, so they decide.
+    """
+    from difflib import SequenceMatcher
+
+    quote = _quote_tokens(text)
+    words = _transcript_words(segments)
+    n = len(quote)
+    if n < 4 or len(words) < n:
+        return []
+    tokens = [w[0] for w in words]
+    quote_set = set(quote)
+
+    hits: List[tuple] = []
+    overlap = sum(1 for t in tokens[:n] if t in quote_set)
+    for start in range(0, len(tokens) - n + 1):
+        if start:
+            overlap += (tokens[start + n - 1] in quote_set) - (tokens[start - 1] in quote_set)
+        if overlap < n * 0.6:
+            continue
+        matcher_ = SequenceMatcher(None, quote, tokens[start:start + n], autojunk=False)
+        ratio = sum(block.size for block in matcher_.get_matching_blocks()) / n
+        if ratio >= min_ratio:
+            hits.append((ratio, start))
+
+    hits.sort(key=lambda hit: -hit[0])
+    chosen: List[tuple] = []
+    for ratio, start in hits:
+        if all(abs(start - other) > n for _, other in chosen):
+            chosen.append((ratio, start))
+        if len(chosen) >= max_results:
+            break
+    return [
+        (words[start][1], words[min(start + n - 1, len(words) - 1)][2], round(ratio, 3))
+        for ratio, start in chosen
+    ]
+
+
 def place_scripture(elements: List[Element], segments: Sequence[Segment],
                     notes: List[str]) -> List[Element]:
     """Pin every scripture card to where its words are actually read."""
@@ -1815,6 +1866,22 @@ def find_dead_time(
     return round(cut_start, 2), round(min(cut_end, limit), 2), kind
 
 
+def speech_end_after(segments: Sequence[Segment], after: float, limit: float) -> float:
+    """
+    Where the stretch of speech containing `after` finishes.
+
+    A question runs on past the moment the model reports — teachers repeat it
+    and add "three minutes" — so the discussion block belongs at the end of
+    that stretch of speech, not in the middle of it.
+    """
+    # A slightly longer gap than elsewhere, so a trailing "three minutes"
+    # after a beat still counts as part of the question.
+    for run in speech_runs(segments, max_gap=4.0):
+        if run["start"] - 1.0 <= after <= run["end"] + 0.5:
+            return min(max(after, run["end"]), limit)
+    return min(after, limit)
+
+
 def detect_pauses(
     elements: Sequence[Element],
     silences: Sequence[dict],
@@ -1871,7 +1938,9 @@ def detect_pauses(
                 f"resumes at {format_timestamp(cut_end)}."
             )
         else:
-            element.pause_at = float(anchor)
+            element.pause_at = (
+                speech_end_after(segments, anchor, limit) if segments else float(anchor)
+            )
             element.notes.append(
                 f"The speaker carried straight on, so {pause_seconds:.0f}s of "
                 "discussion time is inserted where the question ends."
@@ -2186,8 +2255,9 @@ def match_lesson_points(
         # Laying the cards out is done AFTER verification — see layout_timeline
         # — because verification snaps start times, and the layout must be the
         # last thing to touch them.
-        notes.extend(detect_pauses(elements, silences, pause_seconds,
-                                   segments=segments, duration=duration))
+        # Discussion blocks are NOT planned here: verification may still move
+        # a question to where its quoted words really are, and the block has
+        # to follow the question. verifier.lay_out does it afterwards.
         if include_lower_third and (speaker.strip() or speaker_title.strip()):
             elements = [lower_third_element(speaker, speaker_title)] + elements
         return elements, notes, model_used

@@ -52,7 +52,11 @@ for name, outline in outlines.items():
             speaker="Test Speaker", speaker_title="Teaching Leader",
             other_keys={k: v for k, v in KEYS.items() if k != PROVIDER} if PROVIDER != "offline" else None,
         )
-        vs = verifier.lay_out(verifier.verify_matches(els, pts, segs, dur), dur)
+        vs = verifier.lay_out(
+            verifier.verify_matches(els, pts, segs, dur), dur,
+            segments=segs, silences=sil,
+            pause_seconds=matcher.APPLICATION_PAUSE_SECONDS,
+        )
         keep = [v.match for v in vs if v.verdict != verifier.REJECTED]
         cues = editor.cues_from_matches(keep)
         editor.render_video(

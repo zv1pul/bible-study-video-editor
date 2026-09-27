@@ -44,6 +44,9 @@ from transcriber import Segment, format_timestamp
 # Verdicts
 # --------------------------------------------------------------------------
 
+# Below this, the model's quote is not really spoken where it claimed.
+EVIDENCE_TRUST = 0.55
+
 VERIFIED = "verified"
 REVIEW = "review"
 REJECTED = "rejected"
@@ -289,16 +292,51 @@ def verify_matches(
                 )
             time_value = snapped
 
+        end_time = float(match.end_time)
+        moved = False
+
+        # --- Layer 2b: the words outrank the number --------------------------
+        # A model may quote the right line and still report the wrong second —
+        # arithmetic on MM:SS timestamps is where weaker models slip. Both the
+        # point and the quote are checkable against the recording, so every
+        # place the quote is spoken is scored on how much of the point's own
+        # words are said there, and the claimed time has to beat them.
+        point_text = text_by_id.get(match.id, match.text)
+
+        def fits(when: float) -> float:
+            return (0.6 * verbatim_score(point_text, segments, when)
+                    + 0.4 * evidence_score(match.evidence, segments, when))
+
+        if match.source == "llm" and len(match.evidence.split()) >= 4:
+            here = fits(time_value)
+            best_time, best_fit = time_value, here
+            for start, _end, _ratio in matcher_module.quote_occurrences(
+                segments, match.evidence, min_ratio=0.8
+            ):
+                if abs(start - time_value) <= 3.0:
+                    continue
+                score_there = fits(start)
+                if score_there > best_fit:
+                    best_time, best_fit = start, score_there
+            if best_time != time_value and best_fit >= here + 0.15:
+                span = max(end_time - float(match.start_time), 0.0)
+                snapped_from = original
+                time_value = snap_to_transcript(best_time, segments)
+                end_time = time_value + span
+                moved = True
+                reasons.append(
+                    f"The words of this point are spoken at "
+                    f"{format_timestamp(time_value)}, not at "
+                    f"{format_timestamp(original)}; moved to where they are."
+                )
+
         # --- Second opinion: does the other placement fit the words better? --
         # Two models disagreeing is only useful if we can tell who is right.
         # Points are read nearly verbatim, so the placement whose surrounding
         # words overlap the point far more is the right one — and when that is
         # the second model's, the card moves there (keeping its length).
-        end_time = float(match.end_time)
-        moved = False
-        other = by_id_second.get(match.id)
+        other = None if moved else by_id_second.get(match.id)
         if other is not None and abs(other - time_value) > CONSENSUS_TOLERANCE:
-            point_text = text_by_id.get(match.id, match.text)
             here = semantic_score(point_text, segments, time_value)
             there = semantic_score(point_text, segments, other)
             here_v = verbatim_score(point_text, segments, time_value)
@@ -318,9 +356,12 @@ def verify_matches(
                 )
 
         # --- Layers 3 and 4 ---------------------------------------------------
-        sem = semantic_score(text_by_id.get(match.id, match.text), segments, time_value)
-        # A moved card has no quote for its new spot; the word match stands in.
-        ev = sem if moved else evidence_score(match.evidence, segments, time_value)
+        sem = semantic_score(point_text, segments, time_value)
+        ev = evidence_score(match.evidence, segments, time_value)
+        # A card moved to the second model's spot has no quote for it; the
+        # word match stands in. One moved to its own quote scores normally.
+        if moved and ev < sem:
+            ev = sem
 
         if match.source == "llm" and not moved:
             if ev == 0.0 and match.evidence.strip():
@@ -339,6 +380,15 @@ def verify_matches(
             other = by_id_second[match.id]
             if cons >= 0.65:
                 reasons.append(f"A second model agreed ({format_timestamp(other)}).")
+            elif fits(time_value) >= fits(other) + 0.15:
+                # Disagreement is only evidence when the other placement is
+                # credible. Here the point's words are spoken at this time and
+                # not at that one, so the disagreement counts for nothing.
+                reasons.append(
+                    f"A second model put this at {format_timestamp(other)}, but "
+                    "the words of this point are spoken here, not there."
+                )
+                cons = None
             else:
                 reasons.append(
                     f"A second model put this at {format_timestamp(other)} instead."
@@ -466,15 +516,20 @@ def lay_out(
     duration: float,
     *,
     overview: bool = True,
+    segments: Sequence[Segment] = (),
+    silences: Sequence[dict] = (),
+    pause_seconds: float = 30.0,
 ) -> List[Verdict]:
     """
-    The final step: lay the verified cards out on the timeline.
+    The final step: plan the discussion blocks, then lay the cards out.
 
-    Verification snaps start times, so layout must come after it, not
-    before. Each laid-out card keeps the verdict of the element it came
+    Verification snaps start times and can move a card to where its quoted
+    words really are, so both of these must come after it, not before: the
+    block that follows a question has to be planned from where the question
+    actually is. Each laid-out card keeps the verdict of the element it came
     from; the overview card inherits the takeaway's.
     """
-    from matcher import layout_timeline
+    from matcher import detect_pauses, layout_timeline
 
     by_id = {v.match.id: v for v in verdicts}
 
@@ -484,9 +539,20 @@ def lay_out(
     shown = [v for v in verdicts if v.verdict != REJECTED]
     hidden = [v for v in verdicts if v.verdict == REJECTED]
 
-    elements, _notes = layout_timeline(
-        [v.match for v in shown], duration, overview=overview
-    )
+    matches = [v.match for v in shown]
+    if segments or silences:
+        pause_notes = {}
+        detect_pauses(matches, silences, pause_seconds,
+                      segments=segments, duration=duration)
+        for match in matches:
+            if match.type == "application" and match.notes:
+                pause_notes[match.id] = match.notes[-1]
+        for identifier, note in pause_notes.items():
+            verdict = by_id.get(identifier)
+            if verdict is not None and note not in verdict.reasons:
+                verdict.reasons.append(note)
+
+    elements, _notes = layout_timeline(matches, duration, overview=overview)
     out: List[Verdict] = list(hidden)
     for element in elements:
         source = by_id.get(element.id) or (

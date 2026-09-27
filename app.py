@@ -1023,7 +1023,11 @@ if st.button("🔍 Analyse recording", type="primary", disabled=not ready, width
                 matches, points, segments, video_duration, second_opinion=second
             )
             # Layout is last: verification may have moved start times.
-            verdicts = verifier.lay_out(verdicts, video_duration, overview=overview_card)
+            verdicts = verifier.lay_out(
+                verdicts, video_duration, overview=overview_card,
+                segments=segments, silences=silences,
+                pause_seconds=float(discussion_seconds),
+            )
             st.session_state.matches = [v.match for v in verdicts]
             st.session_state.verdicts = verdicts
             st.session_state.analysed_fingerprint = _fingerprint

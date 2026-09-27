@@ -1242,7 +1242,7 @@ def _render_with_ffmpeg(
         command += ["-map", "0:a?", *audio_args,
                     "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
                     "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-                    "-threads", str(threads), output_path]
+                    *PIECE_TIMING, "-threads", str(threads), output_path]
         return command
 
     time_re = _re.compile(r"out_time_us=(\d+)")
@@ -1305,6 +1305,15 @@ def plan_pieces(cues: Sequence[Cue], duration: float) -> List[dict]:
     if duration - cursor > 0.05:
         pieces.append({"kind": "source", "start": cursor, "end": duration})
     return pieces
+
+
+# Every piece is written with the same media timescale and steady frame
+# timing. Without this, pieces encoded from a recording made at, say,
+# 30.01 fps end up with a different timescale from the generated cards, and
+# joining them by stream copy stamps the video with the wrong times — the
+# picture then drifts behind the sound. See _concat_pieces, which checks.
+PIECE_TIMESCALE = 90000
+PIECE_TIMING = ["-fps_mode", "cfr", "-video_track_timescale", str(PIECE_TIMESCALE)]
 
 
 def _render_pause_block(
@@ -1370,7 +1379,7 @@ def _render_pause_block(
         "-filter_complex", ";".join(filters),
         "-map", "[vout]", "-map", "1:a",
         "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
-        "-pix_fmt", "yuv420p", "-threads", str(threads),
+        "-pix_fmt", "yuv420p", "-threads", str(threads), *PIECE_TIMING,
         "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2",
         "-t", f"{seconds:.3f}", output_path,
     ], capture_output=True, text=True)
@@ -1401,11 +1410,41 @@ def _render_still_piece(
                 f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,"
                 f"setsar=1,fps={fps},format=yuv420p"),
         "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
-        "-pix_fmt", "yuv420p", "-threads", str(threads),
+        "-pix_fmt", "yuv420p", "-threads", str(threads), *PIECE_TIMING,
         "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2",
         "-shortest", output_path,
     ], capture_output=True)
     return result.returncode == 0 and os.path.exists(output_path)
+
+
+def track_lengths(path: str) -> dict:
+    """How long the picture and the sound each run, in seconds."""
+    import json as _json
+    import subprocess
+
+    from transcriber import ffmpeg_exe
+
+    probe = os.path.join(os.path.dirname(ffmpeg_exe()), "ffprobe")
+    if not os.path.exists(probe):
+        probe = "ffprobe"
+    try:
+        result = subprocess.run(
+            [probe, "-v", "error", "-show_entries",
+             "stream=codec_type,duration", "-of", "json", path],
+            capture_output=True, text=True, timeout=120,
+        )
+        streams = _json.loads(result.stdout or "{}").get("streams", [])
+    except Exception:
+        return {"video": 0.0, "audio": 0.0}
+    out = {"video": 0.0, "audio": 0.0}
+    for stream in streams:
+        kind = stream.get("codec_type")
+        if kind in out:
+            try:
+                out[kind] = max(out[kind], float(stream.get("duration") or 0.0))
+            except (TypeError, ValueError):
+                pass
+    return out
 
 
 def _concat_pieces(paths: Sequence[str], output_path: str, preset: str,
@@ -1425,14 +1464,25 @@ def _concat_pieces(paths: Sequence[str], output_path: str, preset: str,
     with open(listing, "w") as handle:
         for item in paths:
             handle.write(f"file '{os.path.abspath(item)}'\n")
+    expected = sum(video_info(item).get("duration", 0.0) for item in paths)
     joined = subprocess.run(
         [ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error",
          "-f", "concat", "-safe", "0", "-i", listing,
-         "-c", "copy", "-movflags", "+faststart", output_path],
+         "-c", "copy", "-movflags", "+faststart",
+         "-video_track_timescale", str(PIECE_TIMESCALE), output_path],
         capture_output=True,
     )
     if joined.returncode == 0 and os.path.exists(output_path):
-        return True
+        # A copy that succeeds can still stamp the picture wrongly when the
+        # pieces disagree about timescale, which shows up as a video track
+        # longer than the pieces it was made from. Re-encode if so.
+        got = video_info(output_path).get("duration", 0.0)
+        if not expected or abs(got - expected) <= max(1.0, expected * 0.002):
+            return True
+        _last_error["concat"] = (
+            f"stream copy gave {got:.1f}s from {expected:.1f}s of pieces; "
+            "re-encoding instead"
+        )
 
     inputs: List[str] = []
     for item in paths:
