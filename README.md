@@ -25,6 +25,13 @@ Then you get a review table: every point, when it was placed, whether it
 passed the checks, and the words the speaker actually said there. Nudge
 anything in the wrong place, untick anything you don't want, then render.
 
+### Before changing anything
+
+[`docs/LESSONS-LEARNED.md`](docs/LESSONS-LEARNED.md) records what every real
+lesson so far got wrong and why the code is shaped the way it is, with the
+commands that re-run the guards. Most of the fussy-looking rules are there
+because a real recording needed them.
+
 ### How placements are checked
 
 An LLM will happily return a confident, well-formatted timestamp that is

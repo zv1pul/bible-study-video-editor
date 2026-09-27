@@ -1836,6 +1836,7 @@ def find_dead_time(
 
     cut_end = cut_start
     kind = "silence"
+    first_confident: Optional[float] = None
     for index, run in enumerate(runs):
         if run["start"] <= cut_start + 0.5:
             continue
@@ -1845,9 +1846,15 @@ def find_dead_time(
         if sustained(index):
             cut_end = run["start"]
             break
+        if first_confident is None and run["p"] >= teacher_bar and run["words"] >= 5:
+            first_confident = run["start"]
         kind = "discussion"           # fragments of talk: the room, not the teacher
     else:
-        cut_end = limit
+        # Nothing sustained before the next point. Cutting to the first
+        # confident speech removes less than cutting everything — the safer
+        # mistake, since dead time left in is only dull, but teaching cut
+        # out is gone.
+        cut_end = first_confident if first_confident is not None else limit
 
     # The model may know better where the teacher came back — say, an
     # audience whose chatter was transcribed as fluently as the teacher.
@@ -1874,11 +1881,19 @@ def speech_end_after(segments: Sequence[Segment], after: float, limit: float) ->
     and add "three minutes" — so the discussion block belongs at the end of
     that stretch of speech, not in the middle of it.
     """
-    # A slightly longer gap than elsewhere, so a trailing "three minutes"
-    # after a beat still counts as part of the question.
-    for run in speech_runs(segments, max_gap=4.0):
-        if run["start"] - 1.0 <= after <= run["end"] + 0.5:
-            return min(max(after, run["end"]), limit)
+    runs = speech_runs(segments, max_gap=2.0)
+    for index, run in enumerate(runs):
+        if not (run["start"] - 1.0 <= after <= run["end"] + 0.5):
+            continue
+        end = max(after, run["end"])
+        # A short tail after a beat — "Three minutes." — still belongs to the
+        # question. A whole sentence does not.
+        for later in runs[index + 1:]:
+            if later["start"] - end <= 4.0 and later["words"] <= 5:
+                end = later["end"]
+            else:
+                break
+        return min(end, limit)
     return min(after, limit)
 
 
