@@ -1305,14 +1305,12 @@ if st.session_state.verdicts:
     ):
         if not memory_notice(MEMORY_NEEDED_RENDER_MB, "render this video"):
             st.stop()
-        # Rendering writes a working copy and the finished file alongside the
-        # recording, so it needs roughly twice the recording's size free.
-        source_mb = 0.0
-        try:
-            source_mb = os.path.getsize(st.session_state.video_path) / (1024 * 1024)
-        except OSError:
-            pass
-        need_disk = max(source_mb * 2.2, 500)
+        # Rendering writes the pieces and then the finished file, so it needs
+        # room for about two copies of the FINISHED video — which is sized by
+        # the quality chosen, not by the recording. A camera file can be ten
+        # times the size of the video made from it, and judging by the
+        # recording would turn people away with plenty of room to spare.
+        need_disk = max(editor.estimated_output_mb(duration, quality) * 2.2, 500)
         disk_ok, free_disk = transcriber.disk_headroom_ok(need_disk, workdir())
         if not disk_ok:
             st.error(

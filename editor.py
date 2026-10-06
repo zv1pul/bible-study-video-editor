@@ -88,6 +88,21 @@ QUALITY_PRESETS = {
 }
 DEFAULT_QUALITY = "balanced"
 
+# Roughly how much a finished minute weighs at each quality, in megabytes.
+# Measured across the real lessons; generous, because the guard that uses it
+# must not turn people away when there is in fact room.
+QUALITY_MB_PER_MINUTE = {"small": 12.0, "balanced": 22.0, "best": 40.0}
+
+
+def estimated_output_mb(duration_seconds: float, quality: str = DEFAULT_QUALITY) -> float:
+    """
+    How large the finished video will be. Governed by the quality chosen,
+    not by the recording's own bitrate: a camera file can be ten times the
+    size of the video made from it.
+    """
+    per_minute = QUALITY_MB_PER_MINUTE.get(quality, QUALITY_MB_PER_MINUTE[DEFAULT_QUALITY])
+    return max(duration_seconds, 0.0) / 60.0 * per_minute
+
 # Bookends
 BOOKEND_DURATION = 5.0
 

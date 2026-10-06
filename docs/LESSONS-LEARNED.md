@@ -59,6 +59,15 @@ python tests/run_formats.py   /tmp/formats  # 6 awkward source formats
 | Outline pasted with tabs and `Romans 1: 21-27` | Reference not recognised; tabs drawn on the card | Reference matching tolerates spaces around the colon; pasted whitespace is collapsed |
 | — | A question moved by verification kept its old discussion block | Blocks are planned in `verifier.lay_out`, **after** verification |
 
+## Lesson 5 — Romans 2 (Nathan Minchen, recorded live with an audience)
+
+| What was different | What it broke | What changed |
+|---|---|---|
+| **A real live recording**: the room discusses each question aloud for four and a half minutes | — | Nothing: the dead-time rule built after lesson 3 cut **8:53** of audience discussion and resumed both times on the teacher's own voice ("Okay, brothers, ready?"). The first real proof of that rule |
+| Camcorder file: 5 GB for 30 minutes (≈22 Mbps) | The disk guard refused to render — it sized the job from the **recording**, so it demanded 10 GB for a video that needed about 1.5 GB | The guard now estimates the **finished** size from the chosen quality (`editor.estimated_output_mb`), which is what actually gets written |
+| An extra data stream in the container | — | Nothing: the renderer already maps video and audio explicitly |
+| An off-camera "You ready?" at the start, and paper-shuffling after the prayer | Same blemishes as lesson 4 | Trimmed by hand again. **Worth building in**: find the first and last spoken words and trim to them |
+
 ---
 
 ## The rules these add up to
