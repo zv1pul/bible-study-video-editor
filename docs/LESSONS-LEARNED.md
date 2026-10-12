@@ -68,6 +68,19 @@ python tests/run_formats.py   /tmp/formats  # 6 awkward source formats
 | An extra data stream in the container | — | Nothing: the renderer already maps video and audio explicitly |
 | An off-camera "You ready?" at the start, and paper-shuffling after the prayer | Same blemishes as lesson 4 | Trimmed by hand again. **Worth building in**: find the first and last spoken words and trim to them |
 
+## Lesson 6 — Romans 3:1–20 (Raneil Ensomo, recorded for the countdown)
+
+| What was different | What it broke | What changed |
+|---|---|---|
+| Says "three minutes in pairs" and carries straight on, trusting the countdown; for the final question says "let the countdown timer run for this one" | The countdown landed after the **first** reading of each question, before the repeat and the instructions | `speech_end_after` keeps the question's repeat and its instructions ("three minutes in pairs…", "30 seconds of silent reflection…") with it; the countdown follows them |
+| Sentences split across recogniser fragments ("…when you" / "fail Him?") | The question looked finished mid-sentence | Sentences are split at punctuation or a real pause, never at fragment boundaries |
+| — | "second division" matched the instruction word "seconds"; "wait a minute" would have matched "minute" | Instruction words are plural only, and a sentence naming a division, principle or verse is never an instruction |
+| Division 2 is **never announced by name** — he goes from the first countdown straight into "All right, now we've established…" | The model placed Division 2 at the overview, where all three are recited | **Division order repair**: a division must sit between the previous division's material and its own. Outside that stretch it moves to where its words are spoken inside it — or, if never spoken, to where its material begins (after the previous question and its instructions) |
+| Strong models out of quota again; the weakest answered | It put the final question at the closing "amen" | Principles and questions are read word for word, so **where their own words are spoken** is a candidate placement, not just the model's quote |
+| Questions read twice | Card started at the second reading | Cards for principles and questions start at the **first** reading |
+| A division announced in the same breath as its principle | (Regression caught by the `live_audience` test) the repair treated "same moment" as "too late" | The division's window is inclusive at both ends |
+| Outline calls the last question a "Final Reflection Question" | Card header would read "Application #3" | Changed in the timings table's Header column — worth making automatic if this recurs |
+
 ---
 
 ## The rules these add up to
@@ -84,3 +97,7 @@ python tests/run_formats.py   /tmp/formats  # 6 awkward source formats
    position must come after the last thing that can move it.
 5. **Never trust a stream copy.** Check the result against what went in.
 6. **Every fix gets a test lesson or a unit check**, or it will come back.
+7. **The outline's structure is evidence too.** Divisions come in order, each
+   after the previous one's material; principles and questions are read word
+   for word. A placement that contradicts the outline is wrong, whatever the
+   model says.

@@ -1873,28 +1873,92 @@ def find_dead_time(
     return round(cut_start, 2), round(min(cut_end, limit), 2), kind
 
 
-def speech_end_after(segments: Sequence[Segment], after: float, limit: float) -> float:
-    """
-    Where the stretch of speech containing `after` finishes.
+# Words that mark a sentence as an instruction about the discussion rather
+# than teaching: "Three minutes in pairs", "just let the countdown timer run",
+# "30 seconds of silent reflection".
+_INSTRUCTION = re.compile(
+    # Plural only: "the second division" and "wait a minute" are teaching.
+    r"\b(minutes|seconds|pairs|groups|discuss(ion)?|reflect(ion)?|share|"
+    r"sharing|countdown|timer|watching alone|on your own|quietly|silent(ly)?)\b",
+    re.IGNORECASE,
+)
+# A sentence naming the next part of the lesson is never an instruction.
+_STRUCTURAL = re.compile(r"\b(division|principle|takeaway|verse|chapter)\b", re.IGNORECASE)
 
-    A question runs on past the moment the model reports — teachers repeat it
-    and add "three minutes" — so the discussion block belongs at the end of
-    that stretch of speech, not in the middle of it.
+
+def _is_repeat(sentence: str, question: str) -> bool:
+    """Is this sentence the question read again?"""
+    from difflib import SequenceMatcher
+
+    said, asked = _quote_tokens(sentence), _quote_tokens(question)
+    if len(said) < 4 or not asked:
+        return False
+    blocks = SequenceMatcher(None, said, asked, autojunk=False).get_matching_blocks()
+    return sum(b.size for b in blocks) / len(said) >= 0.6
+
+
+def speech_end_after(segments: Sequence[Segment], after: float, limit: float,
+                     question: str = "") -> float:
     """
-    runs = speech_runs(segments, max_gap=2.0)
-    for index, run in enumerate(runs):
-        if not (run["start"] - 1.0 <= after <= run["end"] + 0.5):
+    Where the question finishes, including the instructions that go with it.
+
+    A question runs on past the moment the model reports: teachers read it
+    again, then say how the time is to be used — "Three minutes in pairs, or
+    just reflect if you're watching alone", "let the countdown timer run".
+    Repeats and instructions belong before the countdown. The first
+    sentence that is neither is the teaching resuming, and the block goes
+    before it.
+    """
+    from transcriber import transcript_words
+
+    # Split what follows into sentences: at the transcriber's punctuation,
+    # or at a real pause. Not at segment boundaries — the recogniser often
+    # breaks a sentence mid-way ("…the way you respond when you" | "fail
+    # Him?"). The pause rule covers transcripts that come without
+    # punctuation.
+    sentences: List[dict] = []
+    current: List[dict] = []
+
+    def close() -> None:
+        if current:
+            sentences.append({"start": current[0]["start"], "end": current[-1]["end"],
+                              "text": " ".join(str(w["word"]) for w in current)})
+
+    for word in transcript_words(segments):
+        if word["end"] <= after - 0.5:
             continue
-        end = max(after, run["end"])
-        # A short tail after a beat — "Three minutes." — still belongs to the
-        # question. A whole sentence does not.
-        for later in runs[index + 1:]:
-            if later["start"] - end <= 4.0 and later["words"] <= 5:
-                end = later["end"]
-            else:
-                break
-        return min(end, limit)
-    return min(after, limit)
+        if current and word["start"] - current[-1]["end"] >= 1.0:
+            close()
+            current = []
+        current.append(word)
+        if str(word["word"]).rstrip().endswith((".", "?", "!")):
+            close()
+            current = []
+    close()
+    if not sentences:
+        return min(after, limit)
+
+    # The sentence `after` falls in is the end of the question itself.
+    end = after
+    rest = sentences
+    for index, sentence in enumerate(sentences):
+        if sentence["start"] - 1.0 <= after <= sentence["end"] + 0.5:
+            end = max(after, sentence["end"])
+            rest = sentences[index + 1:]
+            break
+
+    for sentence in rest:
+        if sentence["start"] - end > 4.0 or sentence["start"] >= limit:
+            break
+        text = sentence["text"]
+        repeat = bool(question) and _is_repeat(text, question)
+        instruction = (len(text.split()) <= 25 and _INSTRUCTION.search(text)
+                       and not _STRUCTURAL.search(text))
+        if repeat or instruction:
+            end = sentence["end"]
+        else:
+            break
+    return min(end, limit)
 
 
 def detect_pauses(
@@ -1954,7 +2018,8 @@ def detect_pauses(
             )
         else:
             element.pause_at = (
-                speech_end_after(segments, anchor, limit) if segments else float(anchor)
+                speech_end_after(segments, anchor, limit, question=element.content)
+                if segments else float(anchor)
             )
             element.notes.append(
                 f"The speaker carried straight on, so {pause_seconds:.0f}s of "

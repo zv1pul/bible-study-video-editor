@@ -209,6 +209,52 @@ check_that("the block follows the question to its corrected place",
            f"pause_at {block.pause_at:.1f}, cut {block.cut_start:.1f}->{block.cut_end:.1f}")
 
 # --------------------------------------------------------------------------
+# Divisions: announced with their principle, or never announced at all
+# --------------------------------------------------------------------------
+
+def division_lesson(spoken_title):
+    lines = [
+        ("Our takeaway is that grace precedes obedience", 0.0, 2.5, 0.95),
+        ("Our first division is the rescue at the sea", 4.0, 2.5, 0.95),
+        ("The principle here is that God fights for his people", 30.0, 2.5, 0.95),
+        ("Where do you need to stand still and let God fight", 60.0, 2.5, 0.95),
+        ("Three minutes in pairs or just reflect if you are watching alone", 66.0, 2.5, 0.95),
+    ]
+    lines.append((spoken_title, 75.0, 2.5, 0.95))
+    lines.append(("Holiness flows from rescue and that is the heart of it all", 100.0, 2.5, 0.95))
+    return speech(lines)
+
+
+div_points = matcher.build_lesson_points({
+    "takeaway": "Grace precedes obedience.",
+    "divisions": [
+        {"title": "I. The Rescue", "principles": "God fights for His people.",
+         "applications": "Where do you need to stand still and let God fight?"},
+        {"title": "II. The Law", "principles": "Holiness flows from rescue.", "applications": ""},
+    ]})
+
+
+def placed_division_two(spoken_title, model_guess, principle_at):
+    lesson_ = division_lesson(spoken_title)
+    guesses = {
+        "takeaway_1": 0.0, "division_1": 4.0, "principle_1": 30.0,
+        "application_1": 60.0, "division_2": model_guess, "principle_2": principle_at,
+    }
+    els = [matcher.Element(type=p.type, header=p.category, content=p.text,
+                           start_time=guesses[p.id], end_time=guesses[p.id] + 6,
+                           id=p.id, confidence=0.8, evidence="") for p in div_points]
+    out = verifier.verify_matches(els, div_points, lesson_, 130.0)
+    return next(v.match.start_time for v in out if v.match.id == "division_2")
+
+
+check_that("a division announced in the same breath as its principle stays put",
+           abs(placed_division_two("Our second division the law and the principle is holiness flows from rescue",
+                                   75.0, 75.0) - 75.0) < 1.0)
+check_that("a division recited only in the overview moves to its own material",
+           70.0 <= placed_division_two("All right now we have established the rescue but what about the law",
+                                       5.0, 100.0) <= 80.0)
+
+# --------------------------------------------------------------------------
 
 print(f"{len(PASSED)} passed")
 for failure in FAILED:

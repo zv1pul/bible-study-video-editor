@@ -303,16 +303,31 @@ def verify_matches(
         # words are said there, and the claimed time has to beat them.
         point_text = text_by_id.get(match.id, match.text)
 
-        def fits(when: float) -> float:
-            return (0.6 * verbatim_score(point_text, segments, when)
-                    + 0.4 * evidence_score(match.evidence, segments, when))
+        # Principles and questions are read out word for word, so where the
+        # point's own words are spoken is evidence in its own right — even
+        # when the model's quote is of the wrong line. Division titles are
+        # not: they are recited in the overview first, so they are left to
+        # the ordering repair, which knows where each division can be.
+        read_verbatim = match.type in ("principle", "application")
+        point_weight = 0.7 if read_verbatim else 0.6
 
-        if match.source == "llm" and len(match.evidence.split()) >= 4:
+        def fits(when: float) -> float:
+            return (point_weight * verbatim_score(point_text, segments, when)
+                    + (1 - point_weight) * evidence_score(match.evidence, segments, when))
+
+        candidates: List[float] = []
+        if match.source == "llm":
+            if len(match.evidence.split()) >= 4:
+                candidates += [start for start, _e, _r in matcher_module.quote_occurrences(
+                    segments, match.evidence, min_ratio=0.8)]
+            if read_verbatim:
+                candidates += [start for start, _e, _r in matcher_module.quote_occurrences(
+                    segments, point_text, min_ratio=0.7)]
+
+        if candidates:
             here = fits(time_value)
             best_time, best_fit = time_value, here
-            for start, _end, _ratio in matcher_module.quote_occurrences(
-                segments, match.evidence, min_ratio=0.8
-            ):
+            for start in candidates:
                 if abs(start - time_value) <= 3.0:
                     continue
                 score_there = fits(start)
@@ -329,6 +344,27 @@ def verify_matches(
                     f"{format_timestamp(time_value)}, not at "
                     f"{format_timestamp(original)}; moved to where they are."
                 )
+
+        # --- Layer 2c: from the first reading ------------------------------
+        # Principles and questions are usually read twice. The card belongs
+        # from the first reading, so a placement on the repeat moves back to
+        # where the same words were said moments before. The end stays put.
+        if read_verbatim and match.source == "llm":
+            earlier = [
+                start for start, _e, _r in matcher_module.quote_occurrences(
+                    segments, point_text, min_ratio=0.7)
+                if time_value - 30.0 <= start < time_value - 3.0
+            ]
+            if earlier:
+                first = snap_to_transcript(min(earlier), segments)
+                if first < time_value:
+                    end_time = max(end_time, time_value + MIN_READABLE_SECONDS)
+                    reasons.append(
+                        f"Starts at the first reading ({format_timestamp(first)}) "
+                        "rather than the repeat."
+                    )
+                    snapped_from = snapped_from if snapped_from is not None else original
+                    time_value = first
 
         # --- Second opinion: does the other placement fit the words better? --
         # Two models disagreeing is only useful if we can tell who is right.
@@ -464,10 +500,90 @@ def verify_matches(
             )
         )
 
+    _repair_division_order(verdicts, points, segments, duration)
     verdicts.sort(key=lambda v: v.match.start_time)
     _check_ordering(verdicts)
     _check_collisions(verdicts)
     return verdicts
+
+
+def _repair_division_order(
+    verdicts: List[Verdict],
+    points: Sequence[LessonPoint],
+    segments: Sequence[Segment],
+    duration: float,
+) -> None:
+    """
+    Whole-set repair: each division belongs between the material of the
+    division before it and its own material.
+
+    Teachers recite every division title in the overview, so a model often
+    places a division there; and some never announce a division by name at
+    all, moving straight from one division's question into the next one's
+    teaching. Principles and questions are placed reliably — they are read
+    word for word — so they fix where each division can be. A division
+    outside that stretch is moved to where its words are spoken inside it,
+    or, if they are never spoken, to where the new material begins.
+    """
+    by_id = {v.match.id: v for v in verdicts}
+    divisions = [p for p in points if p.category == "Division"]
+    if len(divisions) < 2:
+        return
+
+    def items_of(title: str) -> List[Verdict]:
+        return [by_id[p.id] for p in points
+                if p.division == title and p.category in ("Principle", "Application")
+                and p.id in by_id and by_id[p.id].verdict != REJECTED]
+
+    for index, division in enumerate(divisions):
+        verdict = by_id.get(division.id)
+        if verdict is None or index == 0:
+            continue
+        before = items_of(divisions[index - 1].text)
+        after = items_of(division.text)
+        if not before:
+            continue
+        lower = max(v.match.end_time for v in before)
+        upper = min((v.match.start_time for v in after), default=duration or float("inf"))
+        start = float(verdict.match.start_time)
+        # Inclusive at both ends: a division is often announced in the same
+        # breath as its first principle, so the two can share a start.
+        if lower - 1.0 <= start <= upper + 1.0 or upper <= lower:
+            continue
+
+        # Spoken inside its stretch? Then that is where it goes.
+        found = [
+            when for when, _end, _ratio in matcher_module.quote_occurrences(
+                segments, division.text, min_ratio=0.5)
+            if lower - 1.0 <= when <= upper + 1.0
+        ]
+        span = max(float(verdict.match.end_time) - start, 8.0)
+        if found:
+            moved_to = snap_to_transcript(found[0], segments)
+            note = (f"Moved to {format_timestamp(moved_to)}: placed at "
+                    f"{format_timestamp(start)}, before the previous division's "
+                    "material had finished, where it can only have been the "
+                    "overview's mention.")
+        else:
+            # Never announced by name: it begins where the previous
+            # division's last point ends — and a question ends only after
+            # it has been read again and the discussion explained.
+            last = max(before, key=lambda v: v.match.end_time)
+            ends = lower
+            if last.match.type == "application":
+                ends = matcher_module.speech_end_after(
+                    segments, lower, upper, question=last.match.content)
+            moved_to = ends + 0.5
+            note = (f"Not announced by name, so placed where its material "
+                    f"begins ({format_timestamp(moved_to)}), after the previous "
+                    "division's last point.")
+        verdict.match = replace(verdict.match, start_time=round(moved_to, 2),
+                                end_time=round(moved_to + span, 2))
+        verdict.reasons = [r for r in verdict.reasons
+                           if "out of their written order" not in r] + [note]
+        verdict.snapped_from = start
+        if verdict.verdict == REJECTED:
+            verdict.verdict = REVIEW
 
 
 def _check_ordering(verdicts: List[Verdict]) -> None:
