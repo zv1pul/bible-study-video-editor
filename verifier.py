@@ -366,6 +366,26 @@ def verify_matches(
                     snapped_from = snapped_from if snapped_from is not None else original
                     time_value = first
 
+        # --- Layer 2d: to the last reading ---------------------------------
+        # The end decides where a question's countdown goes, so it is taken
+        # from the words as well: the last reading of the point that begins
+        # shortly after the card does. A model's span is not trusted — a
+        # question placed at the right moment can still come back lasting a
+        # minute, and its countdown would then cut into the teaching.
+        if read_verbatim and match.source == "llm":
+            readings = [
+                end for start, end, _r in matcher_module.quote_occurrences(
+                    segments, point_text, min_ratio=0.7)
+                if time_value - 1.0 <= start <= time_value + 45.0
+            ]
+            if readings:
+                last_reading = max(readings)
+                if abs(end_time - last_reading) > 10.0:
+                    reasons.append(
+                        f"Ends with the last reading at {format_timestamp(last_reading)}."
+                    )
+                end_time = last_reading
+
         # --- Second opinion: does the other placement fit the words better? --
         # Two models disagreeing is only useful if we can tell who is right.
         # Points are read nearly verbatim, so the placement whose surrounding

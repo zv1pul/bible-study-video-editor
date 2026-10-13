@@ -100,6 +100,38 @@ check(
     ["Romans 3:21–22", "Exodus 20:3"],
 )
 
+def headers(applications):
+    pts = matcher.build_lesson_points({"divisions": [
+        {"title": "I. One", "principles": "", "applications": applications}]})
+    return [(matcher.header_for(p, pts), p.text) for p in pts if p.category == "Application"]
+
+
+check(
+    "a question named in the outline is headed with that name",
+    headers("How has God been faithful to you?\n\nWhere are you tempted?\n\n"
+            "Final Reflection Question  Considering how seriously God takes our sin, "
+            "where have you become too casual about sin in your life?"),
+    [("Application #1", "How has God been faithful to you?"),
+     ("Application #2", "Where are you tempted?"),
+     ("Final Reflection", "Considering how seriously God takes our sin, where have "
+                          "you become too casual about sin in your life?")],
+)
+check(
+    "the name may sit on its own line, and countdown notes are dropped",
+    headers("FINAL REFLECTION QUESTION\nWhere have you become too casual about sin?\n[30-SECOND COUNTDOWN]"),
+    [("Final Reflection", "Where have you become too casual about sin?")],
+)
+check(
+    "\"Application Question:\" is the ordinary kind and keeps its usual header",
+    headers("Application Question: Where are you most tempted?"),
+    [("Application", "Where are you most tempted?")],
+)
+check(
+    "a plain question is unchanged",
+    headers("What is the state of your heart towards God?"),
+    [("Application", "What is the state of your heart towards God?")],
+)
+
 # --------------------------------------------------------------------------
 # Dead time after a question: silence, a room discussing, or neither
 # --------------------------------------------------------------------------
@@ -185,6 +217,22 @@ second = [matcher.Element(type="principle", header="Principle #1", content=point
 only = verifier.verify_matches(right, [points[0]], lesson, 900.0, second_opinion=second)[0]
 check("an unsupported second opinion does not demote a good placement",
       only.verdict, verifier.VERIFIED)
+
+# A model can place a question at the right moment yet give it a minute-long
+# span; the countdown must still follow the last reading, not that span.
+span_lesson = speech([
+    ("How has God been faithful to you and how does this change the way you respond when you fail him", 100.0, 2.5, 0.95),
+    ("How has God been faithful to you and how does this change the way you respond when you fail him", 110.0, 2.5, 0.95),
+    ("All right now we have established that God is faithful in spite of our unfaithfulness", 125.0, 2.5, 0.95),
+])
+span_point = matcher.LessonPoint(id="application_1", category="Application",
+                                 text="How has God been faithful to you, and how does this change the way you respond when you fail Him?")
+long_span = [matcher.Element(type="application", header="Application", content=span_point.text,
+                             start_time=100.0, end_time=160.0, id="application_1",
+                             confidence=0.8, evidence="How has God been faithful to you")]
+ended = verifier.verify_matches(long_span, [span_point], span_lesson, 200.0)[0].match.end_time
+check_that("a question's end comes from its last reading, not the model's span",
+           abs(ended - 117.6) < 1.0, f"got {ended:.1f}")
 
 # --------------------------------------------------------------------------
 # A moved question takes its discussion block with it

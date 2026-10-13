@@ -766,7 +766,9 @@ with right:
                             "for intimacy with God?",
                 help=f"The application questions asked under {title}. "
                      "One per line — or, for a question written over several "
-                     "lines, leave a blank line between questions.",
+                     "lines, leave a blank line between questions. Start a "
+                     "question with its own name, like \"Final Reflection "
+                     "Question\", and the card is headed with that name.",
             )
         divisions.append({
             "title": title,
@@ -802,7 +804,7 @@ with right:
             for d in divisions
         ),
         "applications": sum(
-            len(matcher.split_items(d["applications"]))
+            len(matcher.parse_questions(d["applications"]))
             for d in divisions
         ),
         "scripture": len(_passages),

@@ -79,7 +79,9 @@ python tests/run_formats.py   /tmp/formats  # 6 awkward source formats
 | Strong models out of quota again; the weakest answered | It put the final question at the closing "amen" | Principles and questions are read word for word, so **where their own words are spoken** is a candidate placement, not just the model's quote |
 | Questions read twice | Card started at the second reading | Cards for principles and questions start at the **first** reading |
 | A division announced in the same breath as its principle | (Regression caught by the `live_audience` test) the repair treated "same moment" as "too late" | The division's window is inclusive at both ends |
-| Outline calls the last question a "Final Reflection Question" | Card header would read "Application #3" | Changed in the timings table's Header column — worth making automatic if this recurs |
+| Outline calls the last question a "Final Reflection Question" | Card header would read "Application #3" | **Now automatic**: a question that opens with its own name ("Final Reflection Question", "Discussion Question:", on the same line or the line above) is headed with that name; "[30-SECOND COUNTDOWN]" notes are dropped; the outline, not the model, decides every header (`matcher.parse_questions`) |
+| A second AI answer placed question 1 correctly but gave it a 58-second span | The countdown drifted 40 seconds into the teaching | A question's or principle's end comes from its **last reading**, not the model's span |
+| Question read twice back to back | The second reading was filtered out as a duplicate of the first (off by one) and a window shifted into the next sentence was used | Readings exactly one question-length apart are both kept, and each match ends at its last matching word |
 
 ---
 

@@ -174,6 +174,7 @@ class LessonPoint:
     text: str
     division: str = ""      # the division this sits under, if any
     reference: str = ""     # "Romans 3:23" — scripture only
+    label: str = ""         # the outline's own name for it: "Final Reflection"
 
     @property
     def type(self) -> str:
@@ -372,11 +373,65 @@ def _lines(value) -> List[str]:
     return split_items(value)
 
 
+# "Final Reflection Question", "Discussion Question:", "Closing Reflection —".
+# Written at the start of a line, alone or followed by the question itself.
+_QUESTION_LABEL = re.compile(
+    r"^\s*((?:(?:final|closing|personal|group|last)\s+)?"
+    r"(?:reflection|application|discussion)(?:\s+question)?)"
+    r"\s*(?:[:\-–—]\s*|\s{2,}|\t+|$)(.*)$",
+    re.IGNORECASE,
+)
+# "[30-SECOND COUNTDOWN]" and similar notes to the editor, not the viewer.
+_BRACKET_NOTE = re.compile(r"^\s*\[[^\]]*\]\s*$")
+
+
+def _card_label(label: str) -> str:
+    """"FINAL REFLECTION QUESTION" -> "Final Reflection"; "" for a plain application."""
+    words = [w for w in label.split() if w.lower() != "question"]
+    if not words or [w.lower() for w in words] == ["application"]:
+        return ""
+    return " ".join(w[:1].upper() + w[1:].lower() for w in words)
+
+
+def parse_questions(value) -> List[tuple]:
+    """
+    The application questions in a box: [(card label, question), ...].
+
+    Questions are written the way split_items reads them. A line may also
+    open with the outline's own name for the question —
+
+        Final Reflection Question  Considering how seriously God takes our sin…
+
+    or carry that name on a line of its own above it — and the card then
+    takes that name as its header instead of "Application #3". Notes in
+    square brackets, like "[30-SECOND COUNTDOWN]", are dropped.
+    """
+    if isinstance(value, (list, tuple)):
+        return [("", str(item).strip()) for item in value if str(item).strip()]
+
+    lines = [line for line in str(value or "").replace("\r", "").split("\n")
+             if not _BRACKET_NOTE.match(line)]
+    blocks: List[list] = [["", []]]               # [label, lines]
+    for line in lines:
+        match = _QUESTION_LABEL.match(line)
+        if match:
+            blocks.append([_card_label(match.group(1)), [match.group(2)] if match.group(2).strip() else []])
+        else:
+            blocks[-1][1].append(line)
+
+    out: List[tuple] = []
+    for label, body in blocks:
+        items = split_items("\n".join(body))
+        for index, item in enumerate(items):
+            out.append((label if index == 0 else "", item))
+    return out
+
+
 def _points_from_structured(outline: dict) -> List[LessonPoint]:
     points: List[LessonPoint] = []
     counts: Dict[str, int] = {}
 
-    def add(category: str, text: str, division: str = "") -> None:
+    def add(category: str, text: str, division: str = "", label: str = "") -> None:
         counts[category] = counts.get(category, 0) + 1
         points.append(
             LessonPoint(
@@ -384,6 +439,7 @@ def _points_from_structured(outline: dict) -> List[LessonPoint]:
                 category=category,
                 text=text,
                 division=division,
+                label=label,
             )
         )
 
@@ -399,14 +455,14 @@ def _points_from_structured(outline: dict) -> List[LessonPoint]:
         add("Division", title)
         for text in _lines(division.get("principles")):
             add("Principle", text, title)
-        for text in _lines(division.get("applications")):
-            add("Application", text, title)
+        for label, text in parse_questions(division.get("applications")):
+            add("Application", text, title, label)
 
     # Anything not filed under a division still belongs in the lesson.
     for text in _lines(outline.get("principles")):
         add("Principle", text)
-    for text in _lines(outline.get("applications")):
-        add("Application", text)
+    for label, text in parse_questions(outline.get("applications")):
+        add("Application", text, label=label)
 
     # Scripture read aloud, in the order it is read. Found by its own words,
     # so it may fall anywhere in the recording.
@@ -543,7 +599,11 @@ def header_for(point: LessonPoint, points: Sequence[LessonPoint]) -> str:
     """"Takeaway" on its own, but "Principle #1" when there are several."""
     if point.category == "Scripture":
         return point.reference or "Scripture"
-    same = [p for p in points if p.category == point.category]
+    if point.label:
+        return point.label
+    # Numbered among the ones without a name of their own, so a "Final
+    # Reflection" does not leave a gap in "Application #1, #2".
+    same = [p for p in points if p.category == point.category and not p.label]
     if len(same) <= 1:
         return point.category
     return f"{point.category} #{same.index(point) + 1}"
@@ -1729,17 +1789,27 @@ def quote_occurrences(
         if ratio >= min_ratio:
             hits.append((ratio, start))
 
-    hits.sort(key=lambda hit: -hit[0])
+    # Best first; a window overlapping a better one is the same reading.
+    # Windows exactly n words apart do not overlap — a question read twice
+    # back to back is two readings, not one.
+    hits.sort(key=lambda hit: (-hit[0], hit[1]))
     chosen: List[tuple] = []
     for ratio, start in hits:
-        if all(abs(start - other) > n for _, other in chosen):
+        if all(abs(start - other) >= n for _, other in chosen):
             chosen.append((ratio, start))
         if len(chosen) >= max_results:
             break
-    return [
-        (words[start][1], words[min(start + n - 1, len(words) - 1)][2], round(ratio, 3))
-        for ratio, start in chosen
-    ]
+
+    out: List[tuple] = []
+    for ratio, start in chosen:
+        # From the first matching word to the last, so a window that runs a
+        # word into the next sentence does not carry that word with it.
+        blocks = [b for b in SequenceMatcher(
+            None, quote, tokens[start:start + n], autojunk=False).get_matching_blocks() if b.size]
+        first = start + (blocks[0].b if blocks else 0)
+        last = start + (blocks[-1].b + blocks[-1].size - 1 if blocks else n - 1)
+        out.append((words[first][1], words[min(last, len(words) - 1)][2], round(ratio, 3)))
+    return out
 
 
 def place_scripture(elements: List[Element], segments: Sequence[Segment],
@@ -2500,7 +2570,9 @@ def _elements_from_payload(
         elements.append(
             Element(
                 type=point.type,
-                header=str(item.get("header") or header_for(point, points)),
+                # The outline decides the header, not the model: it may echo
+                # "Application #3" where the outline named it "Final Reflection".
+                header=header_for(point, points) if point else str(item.get("header") or ""),
                 content=point.text,
                 start_time=float(start),
                 end_time=float(end) if end is not None else 0.0,
