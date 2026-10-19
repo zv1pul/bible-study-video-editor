@@ -89,6 +89,16 @@ for name, outline in outlines.items():
         if not ok and os.environ.get("GITHUB_ACTIONS"):
             print(f"::error title=Test lesson {name}::length {got:.1f}s, expected {expected:.1f}s, "
                   f"overlaps {overlaps}")
+            # Everything needed to reproduce it elsewhere — logs need a login.
+            said = json.dumps([[round(s["start"], 2), round(s["end"], 2), s["text"]] for s in segs])
+            placed = json.dumps([[e.type, round(e.start_time, 2), round(e.end_time, 2),
+                                  round(e.pause_at, 2), round(e.cut_start, 2), round(e.cut_end, 2),
+                                  e.has_timer] for e in cards])
+            print(f"::error title={name} transcript::{said}"[:60000])
+            print(f"::error title={name} placements::{placed}"[:60000])
+            words = json.dumps([[round(w["start"], 2), round(w["end"], 2), w["word"], round(w.get("p", 1), 2)]
+                                for s in segs for w in (s.get("words") or [])])
+            print(f"::error title={name} words::{words}"[:60000])
     except Exception as exc:
         failures += 1
         print(f"  CRASH {name}: {type(exc).__name__}: {exc}\n{traceback.format_exc()[-600:]}")
