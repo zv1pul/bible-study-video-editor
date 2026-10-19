@@ -12,6 +12,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
+import editor  # noqa: E402
 import matcher  # noqa: E402
 import verifier  # noqa: E402
 from transcriber import Segment  # noqa: E402
@@ -301,6 +302,74 @@ check_that("a division announced in the same breath as its principle stays put",
 check_that("a division recited only in the overview moves to its own material",
            70.0 <= placed_division_two("All right now we have established the rescue but what about the law",
                                        5.0, 100.0) <= 80.0)
+
+# --------------------------------------------------------------------------
+# The ends of the recording: setup before the teacher, walk-off after
+# --------------------------------------------------------------------------
+
+TEACHING = "and so tonight we look at what the passage teaches us about the grace of God"
+
+
+def recording(opening, closing, length):
+    lines = list(opening)
+    at = max(start for _t, start, _r, _p in opening) + 8.0
+    while at < length - 60:
+        lines.append((TEACHING + ".", at, 2.5, 0.93))
+        at += 8.0
+    lines += closing
+    return speech(lines)
+
+
+# Eric: six seconds of setup, then a sign-off after the amen, then he gets up.
+eric = recording(
+    [("Good evening brothers. My name is Eric and I am your substitute teaching leader.", 6.0, 2.5, 0.93)],
+    [("Thank you Lord for your word. In Jesus' name we pray, amen.", 1780.0, 2.5, 0.93),
+     ("Make it a blessed week, brothers.", 1785.0, 3.0, 0.92),
+     ("Great day.", 1790.5, 2.0, 0.70)],
+    1793.0)
+start, end = matcher.find_recording_ends(eric, 1793.0)
+check_that("Eric: the setup before he speaks is trimmed", abs(start - 5.6) < 0.3, f"start {start}")
+check_that("Eric: the sign-off stays and the walk-off goes",
+           1786.5 < end < 1789.5, f"end {end}")
+
+# Nathan: someone off camera asks "You ready?"; chatter follows the prayer.
+nathan = recording(
+    [("You ready?", 0.0, 2.5, 0.75),
+     ("Well, good evening brothers. My name is Nathan and I am thrilled to be here.", 1.9, 2.5, 0.93)],
+    [("And we ask these things in Jesus' name.", 1300.0, 2.5, 0.93),
+     ("Yeah, we'll do them.", 1303.3, 3.0, 0.80),
+     ("Yeah.", 1305.0, 2.0, 0.70),
+     ("And you can even put these guys on.", 1305.6, 3.0, 0.85),
+     ("Thank you.", 1309.5, 2.0, 0.80)],
+    1312.0)
+start, end = matcher.find_recording_ends(nathan, 1312.0)
+check_that("Nathan: the off-camera \"You ready?\" is trimmed", abs(start - 1.5) < 0.3, f"start {start}")
+check_that("Nathan: it ends just after the prayer, not the chatter",
+           1303.0 < end < 1305.0, f"end {end}")
+
+# Raneil: starts speaking at once and smiles at the camera after the amen.
+raneil = recording(
+    [("Good evening, brothers. Last week Paul told the religious Jew something important.", 0.0, 2.5, 0.93)],
+    [("In Jesus' name we pray, amen.", 1450.0, 2.5, 0.93)],
+    1455.8)
+start, end = matcher.find_recording_ends(raneil, 1455.8)
+check("Raneil: a clean recording is left alone", (start, end), (0.0, 1455.8))
+
+# Found running the packaged app: the first sentence is often heard less
+# surely, and a lesson may close without an "amen". Neither may be cut.
+plain = speech([
+    ("Our takeaway is that grace precedes obedience.", 0.0, 2.5, 0.79),
+    ("Our first division is the rescue at the sea.", 3.0, 2.5, 0.95),
+    ("The principle here is that God fights for his people.", 6.0, 2.5, 0.95),
+    ("Holiness flows from rescue.", 70.0, 2.5, 0.95),
+    ("Let us close in prayer.", 74.0, 2.5, 0.95),
+])
+check("an unsure first sentence and a closing without \"amen\" are both kept",
+      matcher.find_recording_ends(plain, 78.0), (0.0, 78.0))
+
+# The renderer trims by leaving the ends out of the plan.
+plan = editor.plan_pieces([], 100.0, 5.0, 90.0)
+check("trimmed plan keeps only the middle", [(p["start"], p["end"]) for p in plan], [(5.0, 90.0)])
 
 # --------------------------------------------------------------------------
 

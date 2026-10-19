@@ -8,6 +8,7 @@ audio in a .mov, VP9 in .webm — and a recording at 30.01 fps, the slightly
 off rate real phones produce, which is what exposes timing mismatches.
 """
 import os
+import shutil
 import subprocess
 import sys
 
@@ -16,14 +17,26 @@ os.makedirs(OUT, exist_ok=True)
 HERE = os.path.dirname(os.path.abspath(__file__))
 VOICE = os.path.join(OUT, "_speech.wav")
 
-subprocess.run(["say", "-v", "Alex", "-r", "165", "-o", VOICE + ".aiff",
-                "Our takeaway is that God keeps every promise. Our first division is the call. "
-                "The principle is that faith obeys before it understands. Here is our application "
-                "question. Where is God asking you to go? And a second question. What rule have you "
-                "kept without remembering the rescue behind it? Let us close in prayer."],
-               check=True, capture_output=True)
-subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", VOICE + ".aiff", "-af", "apad=whole_dur=57",
-                "-ar", "48000", "-ac", "2", VOICE], check=True, capture_output=True)
+sys.path.insert(0, os.path.dirname(HERE))
+from transcriber import ffmpeg_exe  # noqa: E402
+
+FFMPEG = ffmpeg_exe()
+if shutil.which("say"):
+    # A Mac: a real voice, so the source carries speech like a lesson does.
+    subprocess.run(["say", "-v", "Alex", "-r", "165", "-o", VOICE + ".aiff",
+                    "Our takeaway is that God keeps every promise. Our first division is the call. "
+                    "The principle is that faith obeys before it understands. Here is our application "
+                    "question. Where is God asking you to go? And a second question. What rule have you "
+                    "kept without remembering the rescue behind it? Let us close in prayer."],
+                   check=True, capture_output=True)
+    subprocess.run([FFMPEG, "-v", "error", "-y", "-i", VOICE + ".aiff", "-af", "apad=whole_dur=57",
+                    "-ar", "48000", "-ac", "2", VOICE], check=True, capture_output=True)
+    os.remove(VOICE + ".aiff")
+else:
+    # Elsewhere: a tone. These cases test the renderer, not the matching.
+    subprocess.run([FFMPEG, "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "sine=frequency=220:sample_rate=48000", "-t", "57", "-ac", "2", VOICE],
+                   check=True, capture_output=True)
 
 CASES = [
     ("portrait_phone.mp4", ["-s", "1080x1920", "-r", "30"], ["-c:v", "libx264", "-c:a", "aac"]),
@@ -38,12 +51,11 @@ CASES = [
 
 for name, source_args, encode_args in CASES:
     subprocess.run(
-        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+        [FFMPEG, "-v", "error", "-y", "-f", "lavfi", "-i",
          f"color=c=0x334455:s={source_args[1]}:r={source_args[3]}",
          "-i", VOICE, "-shortest", *encode_args, "-preset", "veryfast",
          os.path.join(OUT, name)],
         check=True, capture_output=True)
     print("built", name)
 
-os.remove(VOICE + ".aiff")
 os.remove(VOICE)

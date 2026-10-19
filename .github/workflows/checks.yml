@@ -1,0 +1,59 @@
+# Every change is checked on a Mac and on Windows before it can reach anyone.
+# A version tag (see release.yml) builds the downloads only if these pass.
+name: Checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+jobs:
+  mac:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -r requirements-local.txt -c constraints.txt ruff
+      - name: Lint
+        run: ruff check --select E9,F63,F7,F82,F401,F841 *.py tests/*.py packaging/*.py
+      - name: Accuracy checks — every case a real lesson once got wrong
+        run: python tests/test_units.py
+      - name: Self-check — the page loads, a test video renders, artwork is present
+        run: python selfcheck.py --update-gate
+      - name: Updates — good ones install, bad ones are refused or rolled back
+        run: python tests/test_updater.py
+      - name: Test lessons — transcribe, match, verify, lay out and render eight lessons
+        run: |
+          python tests/build_corpus.py "$RUNNER_TEMP/corpus"
+          python tests/run_corpus.py "$RUNNER_TEMP/corpus" offline
+      - name: Source formats — phone, 4K, 480p, .mov, .webm, 30.01 fps
+        run: |
+          python tests/build_formats.py "$RUNNER_TEMP/formats"
+          python tests/run_formats.py "$RUNNER_TEMP/formats"
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -r requirements-local.txt -c constraints.txt
+      - name: Accuracy checks
+        run: python tests/test_units.py
+      - name: Self-check
+        run: python selfcheck.py --update-gate
+      - name: Updates
+        run: python tests/test_updater.py
+      - name: Source formats
+        run: |
+          python tests/build_formats.py "$env:RUNNER_TEMP\formats"
+          python tests/run_formats.py "$env:RUNNER_TEMP\formats"

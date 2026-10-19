@@ -1,0 +1,68 @@
+# Push a tag like v1.1.0 and this builds the three downloads — Mac (Apple
+# Silicon), Mac (Intel) and Windows — but only after every check passes, and
+# each build checks itself again before it is zipped. The result is a DRAFT
+# release: nothing is public until someone presses Publish.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  checks:
+    uses: ./.github/workflows/checks.yml
+
+  mac:
+    needs: checks
+    strategy:
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and check the app
+        run: ./packaging/build_macos.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: download-${{ matrix.runner }}
+          path: dist/*.zip
+
+  windows:
+    needs: checks
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and check the app
+        run: powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: download-windows
+          path: dist/*.zip
+
+  draft:
+    needs: [mac, windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: downloads
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: downloads/*.zip
+          body: |
+            **Download the one for your computer**, unzip it, and follow "Read me first".
+
+            - **Mac with Apple Silicon** (M1, M2, M3, M4…): Bible Study Video Editor - Mac (Apple Silicon).zip
+            - **Older Intel Mac**: Bible Study Video Editor - Mac (Intel).zip
+            - **Windows 10 or 11**: Bible Study Video Editor - Windows.zip
+
+            Not sure which Mac you have? Apple menu → About This Mac → "Chip".

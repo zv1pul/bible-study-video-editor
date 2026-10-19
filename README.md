@@ -10,6 +10,29 @@ third with the speaker's name and title.
 Everything it uses is free: the speech recognition runs on your own computer,
 and the AI matching runs on a free API tier.
 
+## Get the app
+
+1. Open the **[latest release](https://github.com/zv1pul/bible-study-video-editor/releases/latest)**.
+2. Download the one for your computer:
+   - **Mac with Apple Silicon** (M1, M2, M3, M4…) — *Mac (Apple Silicon)*
+   - **Older Intel Mac** — *Mac (Intel)*
+   - **Windows 10 or 11** — *Windows*
+
+   Not sure which Mac? Apple menu → About This Mac → "Chip".
+3. Unzip it and follow **Read me first** inside.
+
+The first time it opens, it checks that everything works on your computer
+(about half a minute), then asks for a free Google AI key — the box walks you
+through getting one in a minute, no card needed. That's all the setup there is.
+
+Updates install themselves. Each one is downloaded, checked on your own
+computer, and used only if it passes — and if a new version won't start, the
+app goes back to the one that worked.
+
+Maintainers: how a new version is released is in
+[`docs/RELEASING.md`](docs/RELEASING.md), and why the code is shaped the way
+it is in [`docs/LESSONS-LEARNED.md`](docs/LESSONS-LEARNED.md).
+
 ---
 
 ## What it does
@@ -535,7 +558,14 @@ ever see *"FFmpeg was not found"*:
 
 ## Sharing it with other people
 
-Full instructions are in [`deploy/DEPLOYING.md`](deploy/DEPLOYING.md). In short:
+**The simple way: send them the release link** —
+https://github.com/zv1pul/bible-study-video-editor/releases/latest. The
+download carries everything (Python, FFmpeg, fonts, artwork), checks itself
+on their computer, walks them through getting their own free AI key, and
+keeps itself up to date. Each person uses their own key and their own free
+daily allowance, so one busy group never uses up another's.
+
+Other ways, for the technically minded ([`deploy/DEPLOYING.md`](deploy/DEPLOYING.md)):
 
 * **Streamlit Community Cloud** — a public link anyone can open, no login.
   Rebuilds automatically whenever you push. About 1 GB of memory, so best for

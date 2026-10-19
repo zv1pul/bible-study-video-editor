@@ -24,6 +24,13 @@ maxUploadSize = 200           # megabytes.
 [browser]
 gatherUsageStats = false
 
+[client]
+# The people using this are not developing it: no "Deploy" button, no
+# developer menu, and no wall of code if something goes wrong — the app
+# explains its own errors.
+toolbarMode = "viewer"
+showErrorDetails = "none"
+
 [theme]
 base = "dark"
 primaryColor = "#FFCA5C"

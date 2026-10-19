@@ -2031,6 +2031,100 @@ def speech_end_after(segments: Sequence[Segment], after: float, limit: float,
     return min(end, limit)
 
 
+# --------------------------------------------------------------------------
+# The ends of the recording
+# --------------------------------------------------------------------------
+#
+# A recording usually starts before the teacher does — the camera is set up,
+# someone off screen asks "you ready?" — and runs on after the closing
+# prayer while the teacher stands and reaches for the camera. Both are
+# trimmed: the video opens on the teacher's first sentence and closes just
+# after the prayer (and a sign-off such as "make it a blessed week").
+
+TRIM_LEAD_SECONDS = 0.4          # kept before the first word
+TRIM_TAIL_SECONDS = 1.5          # kept after the last
+TRIM_MIN_START = 1.0             # shorter than this is not worth a cut
+TRIM_MIN_END = 2.0
+TRIM_MIN_CONFIDENCE = 0.45       # below this a "sentence" is noise, not speech
+_PRAYER_END = re.compile(r"\bamen\b|\bjesus'?s?\W+(holy\s+)?name\b", re.IGNORECASE)
+_SIGN_OFF = re.compile(r"\b(week|night|bless(ed)?|brothers|sisters|see you|take care|goodbye)\b",
+                       re.IGNORECASE)
+
+
+def _sentences(segments: Sequence[Segment]) -> List[dict]:
+    """The transcript as sentences: split at punctuation or a pause."""
+    from transcriber import transcript_words
+
+    out: List[dict] = []
+    current: List[dict] = []
+
+    def close() -> None:
+        if current:
+            out.append({"start": current[0]["start"], "end": current[-1]["end"],
+                        "words": len(current),
+                        "p": sum(w["p"] for w in current) / len(current),
+                        "text": " ".join(str(w["word"]) for w in current)})
+
+    for word in transcript_words(segments):
+        if current and word["start"] - current[-1]["end"] >= 1.0:
+            close()
+            current = []
+        current.append(word)
+        if str(word["word"]).rstrip().endswith((".", "?", "!")):
+            close()
+            current = []
+    close()
+    return out
+
+
+def find_recording_ends(segments: Sequence[Segment], duration: float) -> tuple:
+    """
+    (start, end): the stretch of the recording worth keeping.
+
+    Starts at the teacher's first real sentence — three words or more, said
+    with the confidence of one clear voice — so "You ready?" from behind the
+    camera is left out. Ends just after the closing prayer, keeping a
+    sign-off that follows it at once; without a prayer, after the last real
+    sentence. Each end is trimmed only when that removes more than a moment.
+    """
+    sentences = _sentences(segments)
+    if not sentences or not duration:
+        return 0.0, duration
+
+    # Deliberately lenient: the first words of a recording are often heard
+    # less surely than the rest, and a real opening sentence must never be
+    # cut. Only near-silent mumbling and one- or two-word asides ("You
+    # ready?") are passed over.
+    first = next((s for s in sentences if s["words"] >= 3 and s["p"] >= TRIM_MIN_CONFIDENCE), None)
+    start = 0.0
+    if first and first["start"] - TRIM_LEAD_SECONDS > TRIM_MIN_START:
+        start = first["start"] - TRIM_LEAD_SECONDS
+
+    end = duration
+    closing = [i for i, s in enumerate(sentences)
+               if s["start"] >= duration - 180.0 and _PRAYER_END.search(s["text"])]
+    if closing:
+        index = closing[-1]
+        last = sentences[index]["end"]
+        for later in sentences[index + 1:]:
+            if later["start"] - last <= 1.5 and later["words"] <= 10 and _SIGN_OFF.search(later["text"]):
+                last = later["end"]
+            else:
+                break
+    else:
+        # No closing prayer to go by: keep everything up to the last thing
+        # anybody clearly said. Without the prayer there is no telling a
+        # final remark from talk after the lesson, so nothing said is cut.
+        real = [s for s in sentences if s["words"] >= 2 and s["p"] >= TRIM_MIN_CONFIDENCE]
+        last = real[-1]["end"] if real else duration
+    if duration - (last + TRIM_TAIL_SECONDS) > TRIM_MIN_END:
+        end = last + TRIM_TAIL_SECONDS
+
+    if end - start < 10.0:          # something is badly wrong; keep it all
+        return 0.0, duration
+    return round(start, 2), round(end, 2)
+
+
 def detect_pauses(
     elements: Sequence[Element],
     silences: Sequence[dict],

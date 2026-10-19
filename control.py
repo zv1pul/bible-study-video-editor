@@ -34,7 +34,7 @@ from typing import Any, Dict, Optional
 
 import requests
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 # Where every installed copy looks for instructions. A plain file in the
 # repository: no server to run, no bill, and you change it with a commit.
@@ -79,9 +79,16 @@ def _read_json(path: str, default: Any = None) -> Any:
 
 
 def _write_json(path: str, value: Any) -> None:
+    # Owner-only: settings can hold an API key, and the cache the group's
+    # shared ones. Written to a temporary file first so a crash mid-write
+    # never leaves a half-written settings file behind.
     try:
-        with open(path, "w", encoding="utf-8") as handle:
+        temporary = f"{path}.tmp"
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             json.dump(value, handle, indent=2)
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
     except Exception:
         pass
 
@@ -416,3 +423,54 @@ def connect(code: str) -> tuple:
 
 def forget_keys() -> None:
     _write_json(_state_path("keys_cache.json"), {})
+
+
+# --------------------------------------------------------------------------
+# A key of one's own
+# --------------------------------------------------------------------------
+#
+# Anyone given the app can use it with a free Google AI key of their own,
+# saved on their computer. No card, no account with us — and their own
+# daily allowance, which a group sharing one key would soon run through.
+
+GEMINI_KEY_PAGE = "https://aistudio.google.com/apikey"
+GEMINI_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+
+
+def saved_keys() -> Dict[str, str]:
+    keys = settings().get("keys") or {}
+    return {k: str(v) for k, v in keys.items() if str(v or "").strip()}
+
+
+def save_key(name: str, value: str) -> None:
+    keys = saved_keys()
+    if value.strip():
+        keys[name] = value.strip()
+    else:
+        keys.pop(name, None)
+    set_setting("keys", keys)
+
+
+def forget_saved_keys() -> None:
+    set_setting("keys", {})
+
+
+def check_gemini_key(key: str) -> tuple:
+    """(ok, message): does Google accept this key? One free, tiny request."""
+    key = (key or "").strip()
+    if not key:
+        return False, "Paste the key first."
+    if " " in key or len(key) < 20:
+        return False, "That doesn't look like a whole key — copy it again from the key page."
+    try:
+        response = requests.get(GEMINI_MODELS_URL, params={"key": key, "pageSize": 1},
+                                timeout=VAULT_TIMEOUT)
+    except Exception:
+        return False, "Couldn't reach Google to check the key. Check the internet connection."
+    if response.status_code == 200:
+        return True, "Key works."
+    if response.status_code in (400, 401, 403):
+        return False, "Google didn't accept that key. Copy it again from the key page."
+    if response.status_code == 429:
+        return True, "Key works (it's busy right now, which is fine)."
+    return False, f"Google answered {response.status_code}; try again in a minute."

@@ -25,6 +25,8 @@ import pandas as pd
 import streamlit as st
 
 import control
+import selfcheck
+import updater
 import editor
 import matcher
 import transcriber
@@ -45,6 +47,7 @@ DEFAULTS = {
     "video_key": None,
     "video_info": None,
     "segments": None,
+    "recording_ends": None,
     "silences": None,
     "fetched_path": None,
     "analysed_fingerprint": None,
@@ -208,7 +211,14 @@ def secret(name: str) -> str:
         pass
     if os.environ.get(name):
         return os.environ[name]
+    own = control.saved_keys().get(name, "")
+    if own:
+        return own
     return control.shared_keys().get(name, "")
+
+
+def has_any_key() -> bool:
+    return bool(secret("GEMINI_API_KEY") or secret("GROQ_API_KEY"))
 
 
 def has_own_keys() -> bool:
@@ -298,6 +308,13 @@ with st.sidebar:
         help="Measured on a 23-minute lesson: smaller ≈ 156 MB, balanced "
              "≈ 224 MB, best ≈ 400 MB. Balanced is a good teaching video; "
              "smaller is barely distinguishable and much easier to move about.",
+    )
+    trim_ends = st.checkbox(
+        "Trim the setup and the walk-off",
+        value=True,
+        help="Starts the video on the teacher's first sentence — not the "
+             "seconds of setting up the camera — and ends it just after the "
+             "closing prayer and any sign-off, before they get up.",
     )
 
     with st.expander("Advanced settings", expanded=False):
@@ -485,9 +502,32 @@ with st.sidebar:
     st.divider()
     st.subheader("About this copy")
     st.caption(f"Version {control.VERSION}")
+    with st.expander("AI key", expanded=False):
+        if control.saved_keys().get("GEMINI_API_KEY"):
+            st.caption("🔑 Your own Google key is saved on this computer.")
+        elif control.shared_keys():
+            st.caption("🔑 Using the group's shared keys.")
+        elif has_own_keys():
+            st.caption("🔑 Keys are set by whoever runs this copy.")
+        else:
+            st.caption("No key connected — matching by keywords only.")
+        _replacement = st.text_input(
+            "Replace with a Google key", type="password",
+            help=f"Free from {control.GEMINI_KEY_PAGE}",
+        )
+        _kc = st.columns(2)
+        if _kc[0].button("Save key", width="stretch"):
+            _ok, _note = control.check_gemini_key(_replacement)
+            if _ok:
+                control.save_key("GEMINI_API_KEY", _replacement)
+                st.rerun()
+            else:
+                st.error(_note)
+        if _kc[1].button("Forget key", width="stretch"):
+            control.forget_saved_keys()
+            st.session_state.pop("skip_key_setup", None)
+            st.rerun()
     if control.vault_url() and not has_own_keys():
-        if control.shared_keys():
-            st.caption("🔑 Connected to the group's shared keys")
         with st.expander("Group code"):
             _new_code = st.text_input(
                 "Group code", value=control.group_code(), type="password",
@@ -503,6 +543,22 @@ with st.sidebar:
     if st.button("Check for updates", width="stretch"):
         control.fetch_control(force=True)
         st.rerun()
+    if os.environ.get("BSVE_LAUNCHER_PID") and st.button(
+        "Quit the app", width="stretch",
+        help="Stops the app on this computer. Open it again any time.",
+    ):
+        st.success("The app has stopped. You can close this tab.")
+        import signal as _signal
+
+        try:
+            os.kill(int(os.environ["BSVE_LAUNCHER_PID"]), _signal.SIGTERM)
+        except Exception:
+            pass
+        os._exit(0)
+    if st.button("Check this computer", width="stretch",
+                 help="Runs every accuracy check and a short test render to "
+                      "confirm this copy works here. About half a minute."):
+        st.session_state.run_self_check = True
 
     _reporting = st.toggle(
         "Send anonymous usage statistics",
@@ -562,45 +618,126 @@ if _status["too_old"]:
         "**Check for updates** in the sidebar."
     )
 elif _status["update_available"]:
+    _packaged = os.environ.get("BSVE_PACKAGED") == "1"
+    _ready = _packaged and updater.staged_version() == _status["latest"]
+    _download = _packaged and updater.pending_download()
     with st.container(border=True):
-        columns = st.columns([4, 1])
-        columns[0].markdown(
-            f"**Version {_status['latest']} is available** — you have "
-            f"{_status['version']}."
-            + (f"  \n{_status['notes']}" if _status["notes"] else "")
-        )
-        if columns[1].button("Update now", width="stretch"):
-            with st.spinner("Updating…"):
-                ok, note = control.apply_update()
-            (st.success if ok else st.error)(note)
+        if _ready:
+            st.markdown(
+                f"**Version {_status['latest']} is installed and checked.** Quit "
+                "the app and open it again to start using it."
+                + (f"  \n{_status['notes']}" if _status["notes"] else "")
+            )
+        elif _download:
+            st.markdown(
+                f"**Version {_status['latest']} needs a new download** — it "
+                "includes changes this copy can't take as an update. "
+                f"[Get it here](https://github.com/{control.REPO}/releases/latest), "
+                "then replace this app with it. Your settings are kept."
+            )
+        else:
+            columns = st.columns([4, 1])
+            columns[0].markdown(
+                f"**Version {_status['latest']} is available** — you have "
+                f"{_status['version']}."
+                + (f"  \n{_status['notes']}" if _status["notes"] else "")
+            )
+            if columns[1].button("Update now", width="stretch"):
+                with st.spinner("Downloading the update and checking it on this "
+                                "computer — about a minute…"):
+                    if _packaged:
+                        ok, note = updater.stage(force=True)
+                    else:
+                        ok, note = control.apply_update()
+                (st.success if ok else st.error)(note)
 
-# First run of a packaged copy: no keys anywhere yet. One box, one word.
-if (
-    control.vault_url()
-    and not has_own_keys()
-    and not control.shared_keys()
+# The first time each version runs — and whenever asked — check that it
+# works on this computer before anyone trusts it with a real lesson.
+if not HOSTED and not os.environ.get("BSVE_SKIP_AUTO_SELFCHECK") and (
+    st.session_state.pop("run_self_check", False)
+    or control.settings().get("self_check_version") != control.VERSION
 ):
+    with st.status("Checking this copy works on this computer…", expanded=True) as _check:
+        _results = selfcheck.run(lambda name: _check.update(label=f"Checking: {name}…"))
+        for _name, _passed, _detail in _results:
+            st.markdown(f"{'✅' if _passed else '❌'} **{_name}** — {_detail}")
+        if selfcheck.all_passed(_results):
+            control.set_setting("self_check_version", control.VERSION)
+            control.set_setting("self_check_problems", [])
+            _check.update(label="This copy works on this computer.", state="complete",
+                          expanded=False)
+        else:
+            control.set_setting("self_check_problems",
+                                [f"{n}: {d}" for n, p, d in _results if not p])
+            _check.update(label="Something on this computer needs attention.",
+                          state="error", expanded=True)
+
+if control.settings().get("self_check_problems"):
+    st.error(
+        "The last check of this computer found a problem, so a video made now "
+        "may not come out right:\n\n"
+        + "\n".join(f"- {p}" for p in control.settings()["self_check_problems"])
+        + "\n\nFix it and press **Check this computer** in the sidebar."
+    )
+
+# First run: no AI key anywhere yet. One box, a minute's work, and never again.
+if not has_any_key() and not st.session_state.get("skip_key_setup"):
     with st.container(border=True):
-        st.markdown("**One-time setup — enter your group code**")
-        st.caption(
-            "This connects your copy to the group's shared AI keys, so you "
-            "never need an API key of your own. Ask whoever gave you the app "
-            "for the code."
-        )
-        _cols = st.columns([3, 1])
-        _code = _cols[0].text_input(
-            "Group code", value=control.group_code(), type="password",
-            label_visibility="collapsed", placeholder="Group code",
-        )
-        if _cols[1].button("Connect", width="stretch", type="primary"):
-            control.set_group_code(_code)
-            _ok, _, _note = control.connect(_code)
-            if _ok:
-                st.success(_note)
-                st.rerun()
-            else:
-                st.error(_note)
+        st.markdown("**One-time setup — connect the AI that finds each point**")
+        _ways = ["Use my own free Google key"]
+        if control.vault_url():
+            _ways.insert(0, "I have a group code")
+        _way = st.radio("How", _ways, horizontal=True, label_visibility="collapsed")
+
+        if _way == "I have a group code":
+            st.caption("Ask whoever gave you the app for the code.")
+            _cols = st.columns([3, 1])
+            _code = _cols[0].text_input(
+                "Group code", value=control.group_code(), type="password",
+                label_visibility="collapsed", placeholder="Group code",
+            )
+            if _cols[1].button("Connect", width="stretch", type="primary"):
+                control.set_group_code(_code)
+                _ok, _, _note = control.connect(_code)
+                if _ok:
+                    st.success(_note)
+                    st.rerun()
+                else:
+                    st.error(_note)
+        else:
+            st.markdown(
+                f"1. Open **[Google AI Studio]({control.GEMINI_KEY_PAGE})** and sign in "
+                "with any Google account.\n"
+                "2. Click **Create API key** and copy it.\n"
+                "3. Paste it here. It's free, needs no card, and is saved only on "
+                "this computer."
+            )
+            _cols = st.columns([3, 1])
+            _key = _cols[0].text_input(
+                "Google AI key", type="password", label_visibility="collapsed",
+                placeholder="Paste the key here",
+            )
+            if _cols[1].button("Save", width="stretch", type="primary"):
+                with st.spinner("Checking the key with Google…"):
+                    _ok, _note = control.check_gemini_key(_key)
+                if _ok:
+                    control.save_key("GEMINI_API_KEY", _key)
+                    st.success(_note)
+                    st.rerun()
+                else:
+                    st.error(_note)
+
+        if st.button("Skip for now"):
+            st.session_state.skip_key_setup = True
+            st.rerun()
         st.stop()
+
+if not has_any_key():
+    st.warning(
+        "No AI key is connected, so points are matched by keywords only — much "
+        "less accurate. Connect one under **About this copy → AI key** in the "
+        "sidebar."
+    )
 
 if HOSTED:
     st.info(
@@ -704,7 +841,8 @@ with left:
     else:
         local_path = st.text_input(
             "Full path to the video",
-            placeholder="/Users/you/Movies/lesson.mp4",
+            placeholder=(r"C:\Users\you\Videos\lesson.mp4" if sys.platform.startswith("win")
+                         else "/Users/you/Movies/lesson.mp4"),
             help="In Finder: right-click the file, hold Option, choose "
                  "'Copy … as Pathname', then paste it here.",
         ).strip().strip('"').strip("'")
@@ -968,6 +1106,8 @@ if st.button("🔍 Analyse recording", type="primary", disabled=not ready, width
             status.update(label="Step 2 of 3 — matching your outline to the transcript")
             bar.progress(0.1)
             video_duration = (info or {}).get("duration", 0.0)
+            st.session_state.recording_ends = matcher.find_recording_ends(
+                segments, video_duration)
             matches, notes, model_used = matcher.match_lesson_points(
                 points,
                 segments,
@@ -1187,6 +1327,13 @@ if st.session_state.verdicts:
     lt_start, lt_duration = editor.lower_third_timing(
         [v.match for v in verdicts]
     )
+    keep_from, keep_to = st.session_state.get("recording_ends") or (0.0, duration)
+    if not trim_ends:
+        keep_from, keep_to = 0.0, duration
+    keep_to = min(keep_to or duration, duration) if duration else keep_to
+    # The name card comes up a few seconds into what is kept, not into the
+    # raw recording — otherwise trimming the setup would swallow most of it.
+    lt_start = lt_start + keep_from
     dropped = len(requested) - len(cues)
 
     if cues:
@@ -1254,7 +1401,8 @@ if st.session_state.verdicts:
     inserted = sum(c.timer_duration for c in cues if c.has_timer)
     bookends = (float(bookend_seconds) if intro_path else 0.0) + \
                (float(bookend_seconds) if outro_path else 0.0)
-    final_length = max(duration - removed + inserted + bookends, 0.0)
+    trimmed = keep_from + max(duration - keep_to, 0.0) if duration else 0.0
+    final_length = max(duration - trimmed - removed + inserted + bookends, 0.0)
     estimate = final_length / rate if duration else 0.0
     style_word = "full-screen card" if card_style == "fullscreen" else "caption"
     extras = []
@@ -1275,13 +1423,20 @@ if st.session_state.verdicts:
         )
     tail = (", plus " + ", ".join(extras)) if extras else ""
     length_note = ""
-    if removed or inserted:
+    if removed or inserted or trimmed:
+        parts = []
+        if removed:
+            parts.append(f"{transcriber.format_timestamp(removed)} of waiting cut out")
+        if inserted:
+            parts.append(f"{transcriber.format_timestamp(inserted)} of discussion time added")
+        if keep_from:
+            parts.append(f"{transcriber.format_timestamp(keep_from)} of setup trimmed")
+        if duration and keep_to < duration:
+            parts.append(f"{transcriber.format_timestamp(duration - keep_to)} after the "
+                         "closing trimmed")
         length_note = (
             f" The finished video will run about "
-            f"{transcriber.format_timestamp(final_length)}"
-            + (f" — {transcriber.format_timestamp(removed)} of waiting cut out" if removed else "")
-            + (f", {transcriber.format_timestamp(inserted)} of discussion time added" if inserted else "")
-            + "."
+            f"{transcriber.format_timestamp(final_length)} — " + ", ".join(parts) + "."
         )
     st.caption(
         f"{len(cues)} {style_word}(s), each on screen for as long as it is "
@@ -1355,6 +1510,8 @@ if st.session_state.verdicts:
                     threads=int(threads),
                     engine=render_engine,
                     progress_cb=on_render,
+                    trim_start=keep_from,
+                    trim_end=keep_to if duration and keep_to < duration else 0.0,
                 )
                 st.session_state.output_path = output_path
                 st.session_state.render_seconds = time.time() - started
@@ -1381,10 +1538,11 @@ MAX_INMEMORY_DOWNLOAD_MB = 400
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 # A packaged app cannot write inside its own bundle, so finished videos go
-# somewhere obvious instead: the user's Movies folder.
-PACKAGED_OUTPUT_DIR = os.path.join(
-    os.path.expanduser("~"), "Movies", "Bible Study Video Editor"
+# somewhere obvious instead: Movies on a Mac, Videos on Windows.
+VIDEOS_DIR = os.path.join(
+    os.path.expanduser("~"), "Videos" if sys.platform.startswith("win") else "Movies"
 )
+PACKAGED_OUTPUT_DIR = os.path.join(VIDEOS_DIR, "Bible Study Video Editor")
 IS_PACKAGED = bool(os.environ.get("BSVE_HOME"))
 STATIC_MAX_AGE_HOURS = 6
 
@@ -1453,7 +1611,7 @@ if st.session_state.output_path and os.path.exists(st.session_state.output_path)
             source = st.session_state.video_path or ""
             folder = os.path.dirname(os.path.abspath(source)) if source else ""
         if not folder or not os.access(folder, os.W_OK):
-            folder = os.path.join(os.path.expanduser("~"), "Movies")
+            folder = VIDEOS_DIR
         os.makedirs(folder, exist_ok=True)
 
         saved = os.path.join(folder, f"{friendly} - captioned.mp4")

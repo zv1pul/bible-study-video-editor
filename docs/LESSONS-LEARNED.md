@@ -83,6 +83,34 @@ python tests/run_formats.py   /tmp/formats  # 6 awkward source formats
 | A second AI answer placed question 1 correctly but gave it a 58-second span | The countdown drifted 40 seconds into the teaching | A question's or principle's end comes from its **last reading**, not the model's span |
 | Question read twice back to back | The second reading was filtered out as a duplicate of the first (off by one) and a window shifted into the next sentence was used | Readings exactly one question-length apart are both kept, and each match ends at its last matching word |
 
+## Making it stand on its own (version 1.1)
+
+Building the standalone download, and running it exactly as a recipient would
+— unzipped fresh, no settings, no key — found three things no amount of
+testing in the development setup could have:
+
+| What was different | What it broke | What changed |
+|---|---|---|
+| A fresh build installs whatever library versions are newest that day | **PyAV 19 had removed an option faster-whisper uses: the new download could not transcribe at all**, though nothing in the app had changed | `constraints.txt` pins every library to the versions the checks passed with; every build and check installs with it. The self-check now reads sound the way transcription does, so a build like that refuses to package and an update like that is refused |
+| The first sentence of a recording is often heard less surely | The new start/end trim cut a real opening sentence, and a closing with no "amen" | The trim only skips one- or two-word asides and near-silence at the start; without a closing prayer it keeps everything anybody clearly said |
+| Closing the launcher | Left the app's server running in the background | The launcher stops its server when it is closed, and the app has a **Quit** button |
+
+And what the download now carries so that nothing goes wrong later, on
+anyone's computer:
+
+- **A self-check** (`selfcheck.py`): the app page loads, every accuracy check
+  passes, a test video renders with cards, a countdown and trims, sound
+  decodes, artwork is present. It runs the first time each version opens, and
+  from **Check this computer**.
+- **Safe updates** (`updater.py`, `packaging/launcher.py`): an update is
+  downloaded, its libraries compared with this copy's, its checks run on this
+  computer — and only then staged. The launcher starts the newest version
+  that passed and falls back to the one before if it won't start.
+  `tests/test_updater.py` proves each path.
+- **Checks on every change** (GitHub Actions, Mac and Windows), and the
+  downloads built only from a version that passed them — each build checking
+  itself again before it is zipped.
+
 ---
 
 ## The rules these add up to
@@ -99,7 +127,9 @@ python tests/run_formats.py   /tmp/formats  # 6 awkward source formats
    position must come after the last thing that can move it.
 5. **Never trust a stream copy.** Check the result against what went in.
 6. **Every fix gets a test lesson or a unit check**, or it will come back.
-7. **The outline's structure is evidence too.** Divisions come in order, each
+7. **Test the thing people actually get.** The download, unzipped fresh,
+   started the way they start it — not the development setup.
+8. **The outline's structure is evidence too.** Divisions come in order, each
    after the previous one's material; principles and questions are read word
    for word. A placement that contradicts the outline is wrong, whatever the
    model says.

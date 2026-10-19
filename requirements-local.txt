@@ -3,3 +3,4 @@
 # recording off the internet is worth having.
 -r requirements.txt
 faster-whisper>=1.1.0,<2
+av>=11,<19                  # PyAV 19 dropped an option faster-whisper 1.2 uses

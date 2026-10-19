@@ -1,35 +1,37 @@
-Bible Study Video Editor — how to install
-=========================================
+Bible Study Video Editor — Mac
+==============================
 
-1.  Drag "Bible Study Video Editor" into your Applications folder.
+1.  Double-click the .zip if it hasn't unzipped already, then drag
+    "Bible Study Video Editor" into your Applications folder.
 
 2.  THE FIRST TIME ONLY, macOS will refuse to open it. That is expected —
-    it blocks any app that was not bought from the App Store. Do this once:
+    it blocks any app that wasn't bought from the App Store. Do this once:
 
         a) Double-click the app. A message says it "was not opened" or
            "cannot be verified". Click "Done".
         b) Open System Settings  ->  Privacy & Security  ->  scroll down
-           to the Security section. You will see the app's name with an
-           "Open Anyway" button. Click it (do this within an hour of
-           step a, or repeat step a).
+           to the Security section. You'll see the app's name with an
+           "Open Anyway" button. Click it (within an hour of step a, or
+           repeat step a).
         c) Enter your Mac password when asked, then click "Open".
 
-    After that, double-clicking works normally, forever.
-    (On older Macs — macOS 14 or earlier — right-click the app and choose
-    "Open" instead; that does the same thing.)
+    After that, double-clicking works normally, for good.
+    (On macOS 14 or earlier: right-click the app and choose "Open" instead.)
 
-3.  The app opens in your web browser. That is normal — it runs entirely on
-    your own computer and nothing is uploaded anywhere.
+3.  The app opens in your web browser. That's normal — it runs entirely on
+    your own computer and your recordings are never uploaded anywhere.
 
-    The very first time you analyse a lesson it downloads a speech model,
-    which takes a minute. After that it is quick.
+    The first time, it checks that everything works on this computer (about
+    half a minute), then asks for a free Google AI key — the box explains
+    how to get one in a minute, no card needed.
 
-Finished videos are saved to:
-    Movies > Bible Study Video Editor
+Finished videos are saved to:   Movies > Bible Study Video Editor
 
-Nothing else needs installing. Python, FFmpeg and the fonts are all inside
-the app.
+Updates install themselves: each one is checked on your computer before it
+is used, and if anything goes wrong the app goes back to the version that
+worked.
 
-If you see "the app is damaged and can't be opened", it was unzipped by
-something that stripped its permissions. Download it again and unzip it by
-double-clicking the .zip in Finder.
+To close the app: "Quit the app" at the bottom of the left-hand panel.
+
+If anything misbehaves, press "Check this computer" in the left-hand panel —
+it says plainly what's wrong.

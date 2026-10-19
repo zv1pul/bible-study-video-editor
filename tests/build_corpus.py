@@ -12,6 +12,10 @@ import os
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from transcriber import ffmpeg_exe  # noqa: E402
+
+FFMPEG = ffmpeg_exe()                  # the app's own, not one on the machine
 OUT = sys.argv[1] if len(sys.argv) > 1 else "corpus"
 os.makedirs(OUT, exist_ok=True)
 
@@ -23,14 +27,14 @@ def run(*cmd):
 def say(text, name, voice="Alex", rate=165, volume=1.0):
     path = os.path.join(OUT, f"_{name}")
     run("say", "-v", voice, "-r", str(rate), "-o", path + ".aiff", text)
-    run("ffmpeg", "-v", "error", "-y", "-i", path + ".aiff", "-ar", "16000", "-ac", "1",
+    run(FFMPEG, "-v", "error", "-y", "-i", path + ".aiff", "-ar", "16000", "-ac", "1",
         "-af", f"volume={volume}", path + ".wav")
     return path + ".wav"
 
 
 def silence(seconds, name):
     path = os.path.join(OUT, f"_{name}.wav")
-    run("ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono",
+    run(FFMPEG, "-v", "error", "-y", "-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono",
         "-t", str(seconds), path)
     return path
 
@@ -44,7 +48,7 @@ def chatter(name, seconds=45):
     ]
     parts = [say(text, f"{name}_{i}", voice, rate) for i, (voice, rate, text) in enumerate(voices)]
     path = os.path.join(OUT, f"_{name}.wav")
-    run("ffmpeg", "-v", "error", "-y", "-i", parts[0], "-i", parts[1], "-i", parts[2],
+    run(FFMPEG, "-v", "error", "-y", "-i", parts[0], "-i", parts[1], "-i", parts[2],
         "-filter_complex",
         "[0]adelay=0|0,volume=0.25[a];[1]adelay=3000|3000,volume=0.22[b];"
         f"[2]adelay=6500|6500,volume=0.2[c];[a][b][c]amix=inputs=3:duration=longest,apad=whole_dur={seconds}",
@@ -58,10 +62,10 @@ def lesson(name, parts, outline, size="1280x720", fps=30):
         for part in parts:
             handle.write(f"file '{os.path.abspath(part)}'\n")
     audio = os.path.join(OUT, f"_{name}_audio.wav")
-    run("ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", listing,
+    run(FFMPEG, "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", listing,
         "-c", "pcm_s16le", audio)
     video = os.path.join(OUT, f"{name}.mp4")
-    run("ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"color=c=0x334455:s={size}:r={fps}",
+    run(FFMPEG, "-v", "error", "-y", "-f", "lavfi", "-i", f"color=c=0x334455:s={size}:r={fps}",
         "-i", audio, "-shortest", "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
         "-c:a", "aac", video)
     outlines[name] = outline

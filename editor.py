@@ -1292,7 +1292,8 @@ def _render_with_ffmpeg(
 # --------------------------------------------------------------------------
 
 
-def plan_pieces(cues: Sequence[Cue], duration: float) -> List[dict]:
+def plan_pieces(cues: Sequence[Cue], duration: float,
+                start: float = 0.0, end: float = 0.0) -> List[dict]:
     """
     Decide the order of the finished video.
 
@@ -1304,12 +1305,17 @@ def plan_pieces(cues: Sequence[Cue], duration: float) -> List[dict]:
          {"kind": "pause",  "cue": <application>},
          {"kind": "source", "start": 251.0, "end": 1392.0}]
     """
+    # start/end trim the recording itself: the setup before the teacher
+    # begins and the walk-off after the closing prayer.
+    end = min(end, duration) if end and end > start else duration
     pauses = sorted(
-        (c for c in cues if c.has_timer and c.timer_duration >= 1.0 and c.pause_at > 0),
+        (c for c in cues if c.has_timer and c.timer_duration >= 1.0
+         and start < c.pause_at < end),
         key=lambda c: c.pause_at,
     )
+    duration = end
     pieces: List[dict] = []
-    cursor = 0.0
+    cursor = max(0.0, start)
     for cue in pauses:
         at = min(max(cue.pause_at, cursor), duration)
         if at - cursor > 0.05:
@@ -1538,6 +1544,8 @@ def render_video(
     fade: float = 0.0,
     engine: str = "auto",
     progress_cb: Optional[Callable[[float, str], None]] = None,
+    trim_start: float = 0.0,
+    trim_end: float = 0.0,
 ) -> str:
     """
     Composite every overlay onto the source video and write the final MP4.
@@ -1583,8 +1591,9 @@ def render_video(
 
         workdir = _tempfile.mkdtemp(prefix="bsve_overlays_")
         try:
-            pieces = plan_pieces(cues, duration)
+            pieces = plan_pieces(cues, duration, trim_start, trim_end)
             has_pauses = any(piece["kind"] == "pause" for piece in pieces)
+            trimmed = trim_start > 0.05 or (0 < trim_end < duration - 0.05)
 
             specs = _overlay_specs(
                 video_path, width, height, duration,
@@ -1595,7 +1604,7 @@ def render_video(
                 countdown_on_source=not has_pauses,
             )
 
-            if not has_pauses and not has_bookends:
+            if not has_pauses and not has_bookends and not trimmed:
                 # The simple case: one pass over the whole recording.
                 if _render_with_ffmpeg(
                     video_path, output_path, specs, duration,

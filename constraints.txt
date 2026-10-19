@@ -1,0 +1,69 @@
+# The exact versions every check passed with. Builds and the automatic
+# checks install with these (pip install -r requirements-local.txt -c
+# constraints.txt), so the downloads people get contain precisely what was
+# tested — never whatever happened to be newest on the day of the build.
+#
+# Why: PyAV 19 removed an option faster-whisper 1.2 relies on, and a fresh
+# build that picked it up could not transcribe at all. Nothing in the app had
+# changed. A library moving underneath it is the likeliest way for this tool
+# to break, so nothing moves without passing the checks first.
+#
+# To move to newer versions: install without -c, run every check (see
+# docs/LESSONS-LEARNED.md), and if they pass, regenerate this file with
+#   pip freeze > constraints.txt   (then put this note back on top).
+altair==6.2.2
+anyio==4.14.2
+attrs==26.1.0
+av==18.1.0
+blinker==1.9.0
+certifi==2026.7.22
+charset-normalizer==3.5.1
+click==8.4.2
+ctranslate2==4.8.1
+decorator==5.3.1
+faster-whisper==1.2.1
+filelock==3.32.4
+flatbuffers==25.12.19
+fsspec==2026.7.0
+h11==0.16.0
+hf-xet==1.6.0
+httpcore==1.0.9
+httptools==0.8.0
+httpx==0.28.1
+huggingface_hub==1.28.0
+idna==3.19
+ImageIO==2.37.4
+imageio-ffmpeg==0.6.0
+itsdangerous==2.2.0
+Jinja2==3.1.6
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+MarkupSafe==3.0.3
+moviepy==2.2.1
+narwhals==2.25.0
+numpy==2.5.2
+onnxruntime==1.29.0
+packaging==26.3
+pandas==3.0.5
+pillow==11.3.0
+proglog==0.1.12
+protobuf==7.36.0
+pyarrow==25.0.1
+pydeck==0.9.3
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.3
+python-multipart==0.0.32
+PyYAML==6.0.3
+referencing==0.37.0
+requests==2.34.2
+rpds-py==2026.6.3
+six==1.17.0
+starlette==1.6.0
+streamlit==1.62.0
+tokenizers==0.23.1
+toml==0.10.2
+tqdm==4.70.0
+typing_extensions==4.16.0
+urllib3==2.7.0
+uvicorn==0.52.4
+websockets==16.1.1

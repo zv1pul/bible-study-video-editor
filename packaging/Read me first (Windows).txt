@@ -1,0 +1,29 @@
+Bible Study Video Editor — Windows
+==================================
+
+1.  Unzip the download: right-click it -> "Extract All…" -> Extract.
+    Put the folder anywhere you like (Documents is fine).
+
+2.  Open the folder and double-click  "Start Bible Study Video Editor".
+
+    THE FIRST TIME ONLY, Windows may say "Windows protected your PC".
+    That is expected for any app not bought from the Microsoft Store.
+    Click "More info", then "Run anyway". It won't ask again.
+
+3.  The app opens in your web browser. That is normal — it runs entirely
+    on your own computer and nothing is uploaded anywhere.
+
+    The first time, it checks that everything works on this computer
+    (about half a minute), then asks for a free Google AI key — the box
+    explains how to get one in a minute, no card needed.
+
+Finished videos are saved to:   Videos > Bible Study Video Editor
+
+Updates install themselves: each one is checked on your computer before
+it is used, and if anything goes wrong the app goes back to the version
+that worked.
+
+To close the app: "Quit the app" at the bottom of the left-hand panel.
+
+If anything misbehaves, press "Check this computer" in the left-hand panel —
+it says plainly what's wrong.
