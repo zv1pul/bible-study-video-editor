@@ -237,6 +237,14 @@ def run(progress_cb: Optional[Callable[[str], None]] = None) -> List[Result]:
     return results
 
 
+def _annotate(title, message):
+    """On GitHub, also report a failure where it can be read without signing in."""
+    import os as _os
+    if _os.environ.get("GITHUB_ACTIONS"):
+        text = str(message).replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+        print(f"::error title={title}::{text}"[:4000], flush=True)
+
+
 def all_passed(results: List[Result]) -> bool:
     return all(passed for _name, passed, _detail in results)
 
@@ -254,5 +262,7 @@ if __name__ == "__main__":
     outcome = run(lambda name: print(f"Checking: {name}…", flush=True))
     for name, passed, detail in outcome:
         print(f"{'PASS' if passed else 'FAIL'}  {name} — {detail}")
+        if not passed:
+            _annotate(f"Self-check: {name}", detail)
     print("ALL OK" if all_passed(outcome) else "PROBLEMS FOUND")
     sys.exit(0 if all_passed(outcome) else 1)

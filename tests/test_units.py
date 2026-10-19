@@ -376,5 +376,7 @@ check("trimmed plan keeps only the middle", [(p["start"], p["end"]) for p in pla
 print(f"{len(PASSED)} passed")
 for failure in FAILED:
     print("  FAILED:", failure)
+    if os.environ.get("GITHUB_ACTIONS"):
+        print("::error title=Accuracy check::" + failure.replace("\n", "%0A"))
 print("ALL OK" if not FAILED else f"{len(FAILED)} FAILURE(S)")
 sys.exit(1 if FAILED else 0)

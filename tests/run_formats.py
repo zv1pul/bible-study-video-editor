@@ -59,9 +59,18 @@ for name in sorted(n for n in os.listdir(FORMATS) if not n.startswith(("out_", "
               f"(exp {expected:6.1f}) {info['size'][0]}x{info['size'][1]} "
               f"picture/sound drift {drift:.2f}s  {round(time.time() - started)}s")
         os.remove(out)
+        if not ok and os.environ.get("GITHUB_ACTIONS"):
+            print(f"::error title=Source format {name}::length {info['duration']:.1f}s, "
+                  f"expected {expected:.1f}s, picture/sound drift {drift:.2f}s")
     except Exception as exc:
         failures += 1
         print(f"  CRASH {name}: {type(exc).__name__}: {exc}")
+        if os.environ.get("GITHUB_ACTIONS"):
+            import traceback
+            print(f"::error title=Source format {name} crashed::{type(exc).__name__}: {exc}%0A"
+                  + traceback.format_exc()[-900:].replace(chr(10), "%0A"))
 
 print("ALL OK" if not failures else f"{failures} FAILURE(S)")
+if failures and os.environ.get("GITHUB_ACTIONS"):
+    print(f"::error title=Source formats::{failures} failed — see the lines marked BAD or CRASH above")
 sys.exit(1 if failures else 0)

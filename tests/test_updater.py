@@ -33,6 +33,8 @@ def check(name, condition, detail=""):
     print(("  ok    " if condition else "  FAIL  ") + name + (f" — {detail}" if detail and not condition else ""))
     if not condition:
         FAILED.append(name)
+        if os.environ.get("GITHUB_ACTIONS"):
+            print(f"::error title=Update check::{name} — {detail}".replace("\n", "%0A"))
 
 
 def release(version, tweak=None):

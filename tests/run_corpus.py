@@ -86,9 +86,17 @@ for name, outline in outlines.items():
               f"of {len(pts)}  {dur:.1f}s -> {got:.1f}s (exp {expected:.1f})  cuts: {cuts}  "
               f"{'OVERLAP ' + str(overlaps) if overlaps else ''}{round(time.time() - t0)}s")
         os.remove(out)
+        if not ok and os.environ.get("GITHUB_ACTIONS"):
+            print(f"::error title=Test lesson {name}::length {got:.1f}s, expected {expected:.1f}s, "
+                  f"overlaps {overlaps}")
     except Exception as exc:
         failures += 1
         print(f"  CRASH {name}: {type(exc).__name__}: {exc}\n{traceback.format_exc()[-600:]}")
+        if os.environ.get("GITHUB_ACTIONS"):
+            print(f"::error title=Test lesson {name} crashed::{type(exc).__name__}: {exc}%0A"
+                  + traceback.format_exc()[-900:].replace(chr(10), "%0A"))
 
 print("ALL OK" if not failures else f"{failures} FAILURE(S)")
+if failures and os.environ.get("GITHUB_ACTIONS"):
+    print(f"::error title=Test lessons::{failures} failed — see the lines marked BAD or CRASH above")
 sys.exit(1 if failures else 0)
