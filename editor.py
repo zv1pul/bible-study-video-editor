@@ -1439,32 +1439,50 @@ def _render_still_piece(
 
 
 def track_lengths(path: str) -> dict:
-    """How long the picture and the sound each run, in seconds."""
+    """
+    How long the picture and the sound each run, in seconds.
+
+    Read with PyAV, which comes with the speech engine. Not with ffprobe:
+    that ships with FFmpeg on a developer's machine but not inside the app,
+    and a check that quietly reads 0 seconds on everyone else's computer is
+    worse than no check. ffprobe is used only if PyAV is missing.
+    """
+    out = {"video": 0.0, "audio": 0.0}
+    try:
+        import av
+
+        with av.open(path) as container:
+            for stream in container.streams:
+                if stream.type in out and stream.duration and stream.time_base:
+                    out[stream.type] = max(out[stream.type],
+                                           float(stream.duration * stream.time_base))
+        if out["video"] or out["audio"]:
+            return out
+    except Exception:
+        pass
+
     import json as _json
+    import shutil as _shutil
     import subprocess
 
-    from transcriber import ffmpeg_exe
-
-    probe = os.path.join(os.path.dirname(ffmpeg_exe()), "ffprobe")
-    if not os.path.exists(probe):
-        probe = "ffprobe"
+    probe = _shutil.which("ffprobe")
+    if not probe:
+        return out
     try:
         result = subprocess.run(
             [probe, "-v", "error", "-show_entries",
              "stream=codec_type,duration", "-of", "json", path],
             capture_output=True, text=True, timeout=120,
         )
-        streams = _json.loads(result.stdout or "{}").get("streams", [])
+        for stream in _json.loads(result.stdout or "{}").get("streams", []):
+            kind = stream.get("codec_type")
+            if kind in out:
+                try:
+                    out[kind] = max(out[kind], float(stream.get("duration") or 0.0))
+                except (TypeError, ValueError):
+                    pass
     except Exception:
-        return {"video": 0.0, "audio": 0.0}
-    out = {"video": 0.0, "audio": 0.0}
-    for stream in streams:
-        kind = stream.get("codec_type")
-        if kind in out:
-            try:
-                out[kind] = max(out[kind], float(stream.get("duration") or 0.0))
-            except (TypeError, ValueError):
-                pass
+        pass
     return out
 
 

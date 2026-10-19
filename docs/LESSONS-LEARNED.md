@@ -94,6 +94,7 @@ testing in the development setup could have:
 | A fresh build installs whatever library versions are newest that day | **PyAV 19 had removed an option faster-whisper uses: the new download could not transcribe at all**, though nothing in the app had changed | `constraints.txt` pins every library to the versions the checks passed with; every build and check installs with it. The self-check now reads sound the way transcription does, so a build like that refuses to package and an update like that is refused |
 | The first sentence of a recording is often heard less surely | The new start/end trim cut a real opening sentence, and a closing with no "amen" | The trim only skips one- or two-word asides and near-silence at the start; without a closing prayer it keeps everything anybody clearly said |
 | Closing the launcher | Left the app's server running in the background | The launcher stops its server when it is closed, and the app has a **Quit** button |
+| **A clean computer, like GitHub's** | The length check used ffprobe, which a developer's Mac has but the download doesn't: on everyone else's computer the self-check would have read "0 seconds" and **refused every update** | Lengths are read with PyAV, which ships with the app (identical readings). Found only by running the checks on a machine with nothing but the repository — which GitHub now does for every change |
 
 And what the download now carries so that nothing goes wrong later, on
 anyone's computer:
@@ -127,8 +128,9 @@ anyone's computer:
    position must come after the last thing that can move it.
 5. **Never trust a stream copy.** Check the result against what went in.
 6. **Every fix gets a test lesson or a unit check**, or it will come back.
-7. **Test the thing people actually get.** The download, unzipped fresh,
-   started the way they start it — not the development setup.
+7. **Test the thing people actually get, on a computer that has nothing
+   else.** The download, unzipped fresh, started the way they start it — and
+   the checks run where no developer tools are installed.
 8. **The outline's structure is evidence too.** Divisions come in order, each
    after the previous one's material; principles and questions are read word
    for word. A placement that contradicts the outline is wrong, whatever the
