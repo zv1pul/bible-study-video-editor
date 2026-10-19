@@ -153,6 +153,8 @@ READ_MAX_SECONDS = 45.0
 
 # Two cards closer than this are joined edge to edge; no bare video between.
 CLOSE_GAP_SECONDS = 4.0
+# A card starting closer than this to the end of the recording cannot be read.
+NO_ROOM_SECONDS = 1.5
 # A division is a heading, quicker to copy than a full sentence.
 DIVISION_MIN_SECONDS = 8.0
 
@@ -2331,10 +2333,24 @@ def layout_timeline(
                     nxt.start_time = resume
 
     # -- inside the recording ------------------------------------------------------
+    # A card the queue has pushed to the very end has no room to be read, and
+    # squeezing it in would lay it over the card before it. It is set aside —
+    # marked "no_room" — and shown in the table instead of in the video.
     if duration:
+        kept: List[Element] = []
         for card in cards:
             card.start_time = max(0.0, min(card.start_time, duration))
-            card.end_time = max(card.start_time + 0.5, min(card.end_time, duration))
+            card.end_time = max(card.start_time, min(card.end_time, duration))
+            last_end = kept[-1].end_time if kept else 0.0
+            if duration - card.start_time < NO_ROOM_SECONDS or card.start_time < last_end - 0.01:
+                card.notes.append("no_room")
+                notes.append(f"{card.header or card.type}: no room left at the end of the "
+                             "recording, so it is left out.")
+                others.append(card)
+                continue
+            card.end_time = max(card.end_time, min(card.start_time + 0.5, duration))
+            kept.append(card)
+        cards = kept
 
     return _sorted(cards + others), notes
 

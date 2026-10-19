@@ -6,6 +6,7 @@ in a second or two, so run them after any change:
 
     python tests/test_units.py
 """
+import json
 import os
 import sys
 
@@ -13,6 +14,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
 import editor  # noqa: E402
+import transcriber  # noqa: E402
 import matcher  # noqa: E402
 import verifier  # noqa: E402
 from transcriber import Segment  # noqa: E402
@@ -370,6 +372,54 @@ check("an unsure first sentence and a closing without \"amen\" are both kept",
 # The renderer trims by leaving the ends out of the plan.
 plan = editor.plan_pieces([], 100.0, 5.0, 90.0)
 check("trimmed plan keeps only the middle", [(p["start"], p["end"]) for p in plan], [(5.0, 90.0)])
+
+# --------------------------------------------------------------------------
+# A transcript that once broke the layout — taken from GitHub's own Mac,
+# whose processor heard one test lesson slightly differently. With no AI key
+# the keyword matcher misplaced everything, and the leftover cards were
+# crammed into the last half-second, on top of each other, their countdowns
+# lost. Matching that weak is expected without AI; a video that contradicts
+# its own plan is not.
+# --------------------------------------------------------------------------
+
+with open(os.path.join(HERE, "fixtures", "three_divisions_on_github.json")) as handle:
+    heard = json.load(handle)
+lines = [[0.0, 2.38], [2.82, 4.02], [4.46, 8.24], [8.64, 11.24], [11.62, 13.72],
+         [14.08, 15.82], [16.36, 18.36], [36.38, 38.48], [38.8, 40.68], [41.12, 42.18],
+         [42.58, 44.76], [44.76, 46.66], [64.39, 68.67], [68.67, 72.35], [90.35, 91.41]]
+github_segments = []
+for a, b in lines:
+    spoken = [{"start": w[0], "end": w[1], "word": w[2], "p": w[3]}
+              for w in heard if a - 0.01 <= w[0] < b - 0.005]
+    github_segments.append(Segment(a, b, " ".join(w["word"] for w in spoken), spoken))
+github_points = matcher.build_lesson_points({
+    "takeaway": "Grace precedes obedience.",
+    "divisions": [
+        {"title": "I. The Rescue", "principles": "God fights for His people.",
+         "applications": "Where do you need to stand still and let God fight?"},
+        {"title": "II. The Law", "principles": "Holiness flows from rescue.",
+         "applications": "What rule have you kept without remembering the rescue behind it?"},
+        {"title": "III. The Tabernacle", "principles": "God desires to dwell among His people.",
+         "applications": "Where have you kept God at a distance this week?"},
+    ]})
+github_duration = 92.27
+silent = transcriber.silences_from_transcript(github_segments, matcher.APPLICATION_GAP_MIN)
+offline, _notes, _model = matcher.match_lesson_points(
+    github_points, github_segments, api_key="", duration=github_duration, silences=silent)
+laid_out = verifier.lay_out(verifier.verify_matches(offline, github_points, github_segments,
+                                                    github_duration), github_duration,
+                            segments=github_segments, silences=silent, pause_seconds=30.0)
+shown = sorted((v.match for v in laid_out
+                if v.verdict != verifier.REJECTED and v.match.type != "lower_third"),
+               key=lambda e: e.start_time)
+overlapping = [(a.type, b.type) for a, b in zip(shown, shown[1:])
+               if b.start_time < (a.pause_at if a.type == "application" and a.has_timer
+                                  else a.end_time) - 0.01]
+check("no two cards shown overlap, however weak the matching", overlapping, [])
+cues = editor.schedule_cues(editor.cues_from_matches(shown), github_duration, 8.0)
+blocks = [p for p in editor.plan_pieces(cues, github_duration) if p["kind"] == "pause"]
+timed = [e for e in shown if e.type == "application" and e.has_timer]
+check("every question shown gets its countdown in the plan", len(blocks), len(timed))
 
 # --------------------------------------------------------------------------
 

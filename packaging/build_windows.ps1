@@ -44,6 +44,7 @@ foreach ($f in @("app.py", "control.py", "control.json", "editor.py", "matcher.p
   Copy-Item $f "$Out\app\"
 }
 Copy-Item "tests\test_units.py" "$Out\app\tests\"
+Copy-Item -Recurse "tests\fixtures" "$Out\app\tests\fixtures"
 foreach ($d in @("assets", "fonts", ".streamlit")) { Copy-Item -Recurse $d "$Out\app\$d" }
 Remove-Item "$Out\app\.streamlit\secrets.toml" -ErrorAction SilentlyContinue
 Copy-Item "packaging\launcher.py" "$Out\launcher.py"

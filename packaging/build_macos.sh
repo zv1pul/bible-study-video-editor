@@ -56,6 +56,7 @@ for f in app.py control.py control.json editor.py matcher.py selfcheck.py \
 done
 mkdir -p "$APP/Contents/Resources/app/tests"
 cp tests/test_units.py "$APP/Contents/Resources/app/tests/"
+cp -R tests/fixtures "$APP/Contents/Resources/app/tests/"
 cp -R assets fonts .streamlit "$APP/Contents/Resources/app/"
 rm -f "$APP/Contents/Resources/app/.streamlit/secrets.toml"
 cp packaging/launcher.py "$APP/Contents/Resources/launcher.py"

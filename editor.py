@@ -1308,9 +1308,11 @@ def plan_pieces(cues: Sequence[Cue], duration: float,
     # start/end trim the recording itself: the setup before the teacher
     # begins and the walk-off after the closing prayer.
     end = min(end, duration) if end and end > start else duration
+    # A question can be the last thing said, so its block may sit at the
+    # very end; one outside the kept stretch belongs to a trimmed part.
     pauses = sorted(
         (c for c in cues if c.has_timer and c.timer_duration >= 1.0
-         and start < c.pause_at < end),
+         and start < c.pause_at <= end + 0.05),
         key=lambda c: c.pause_at,
     )
     duration = end
@@ -1609,6 +1611,10 @@ def render_video(
 
         workdir = _tempfile.mkdtemp(prefix="bsve_overlays_")
         try:
+            # The cards and their countdown blocks come from the same schedule,
+            # so a card that cannot be shown never leaves a block behind and a
+            # block is never missing for a card that is shown.
+            cues = schedule_cues(cues, duration, cue_duration)
             pieces = plan_pieces(cues, duration, trim_start, trim_end)
             has_pauses = any(piece["kind"] == "pause" for piece in pieces)
             trimmed = trim_start > 0.05 or (0 < trim_end < duration - 0.05)

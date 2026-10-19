@@ -700,6 +700,14 @@ def lay_out(
             out.append(Verdict(match=element, verdict=REVIEW, score=0.5,
                                reasons=["Laid out without a verified source."]))
             continue
+        if "no_room" in element.notes:
+            # Pushed past the end of the recording by the cards before it: it
+            # cannot be shown, so it stays out of the video and in the table.
+            element.notes = [n for n in element.notes if n != "no_room"]
+            out.append(replace(source, match=element, verdict=REJECTED, reasons=list(source.reasons) + [
+                "No room left at the end of the recording to show it — the points "
+                "before it ran long. Check the timings above it."]))
+            continue
         out.append(replace(source, match=element))
     return out
 
