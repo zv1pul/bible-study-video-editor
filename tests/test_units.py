@@ -421,6 +421,79 @@ blocks = [p for p in editor.plan_pieces(cues, github_duration) if p["kind"] == "
 timed = [e for e in shown if e.type == "application" and e.has_timer]
 check("every question shown gets its countdown in the plan", len(blocks), len(timed))
 
+check("countdown lengths are read the way people type them",
+      [editor.parse_seconds(t) for t in ("45", "45s", "2:30", "2 min", "1.5 min", "", "abc", "0", "99:00")],
+      [45.0, 45.0, 150.0, 120.0, 90.0, 0.0, 0.0, 0.0, 0.0])
+
+# --------------------------------------------------------------------------
+# Slides, saved settings and shared keys — kept on this computer between runs.
+# A new closing slide once had to be uploaded again for every single video.
+
+import tempfile  # noqa: E402
+
+from PIL import Image  # noqa: E402
+
+import control  # noqa: E402
+
+_saved_state = control._STATE_DIR
+control._STATE_DIR = tempfile.mkdtemp(prefix="bsve_test_state_")
+try:
+    scratch = tempfile.mkdtemp(prefix="bsve_test_slides_")
+    portrait = os.path.join(scratch, "poster.png")
+    Image.new("RGB", (800, 1200), (200, 30, 30)).save(portrait)
+    saved = control.save_artwork("outro", portrait)
+    with Image.open(saved) as slide:
+        check("a portrait poster becomes a widescreen slide", slide.size, editor.SLIDE_SIZE)
+        middle = slide.getpixel((editor.SLIDE_SIZE[0] // 2, editor.SLIDE_SIZE[1] // 2))
+        corner = slide.getpixel((5, 5))
+    check_that("the poster sits whole in the middle", middle[0] > 180 and middle[1] < 60, middle)
+    check_that("the sides are a soft backdrop, not black bars", corner != (0, 0, 0), corner)
+    check("the saved slide is found again on the next run",
+          control.saved_artwork("outro"), saved)
+
+    pdf = os.path.join(scratch, "poster.pdf")
+    Image.new("RGB", (1600, 900), (20, 90, 160)).save(pdf)
+    try:
+        control.save_artwork("intro", pdf)
+        with Image.open(control.saved_artwork("intro")) as slide:
+            check("a PDF's first page becomes the opening slide", slide.size, editor.SLIDE_SIZE)
+    except ImportError:
+        FAILED.append("the PDF reader (pypdfium2) is not installed")
+
+    junk = os.path.join(scratch, "notes.png")
+    with open(junk, "w") as handle:
+        handle.write("not a picture")
+    try:
+        control.save_artwork("outro", junk)
+        FAILED.append("a file that is not a picture was accepted as a slide")
+    except ValueError:
+        PASSED.append("a file that is not a picture is turned away with a reason")
+    check("a refused file leaves the slide already in use alone",
+          control.saved_artwork("outro"), saved)
+    control.forget_artwork("outro")
+    check("putting back the original removes the saved slide", control.saved_artwork("outro"), "")
+
+    control.set_pref("discussion_seconds", 45)
+    check("a changed setting is remembered", control.prefs().get("discussion_seconds"), 45)
+    control.remember_speaker("Raneil Ensomo", "Teaching Leader")
+    control.remember_speaker("Eric Roachford", "Substitute Teaching Leader")
+    control.remember_speaker("raneil ensomo", "Teaching Leader")
+    check("speakers are remembered most recent first, without duplicates",
+          [s["name"] for s in control.speakers()], ["raneil ensomo", "Eric Roachford"])
+
+    keys = {"GEMINI_API_KEY": "AIza-test-not-real", "GROQ_API_KEY": "gsk_test_not_real"}
+    masked = control.mask_keys(keys)
+    check("shared keys survive the trip through control.json", control.unmask_keys(masked), keys)
+    check_that("shared keys are not stored in plain sight", "AIza" not in masked, masked)
+    check("a damaged shared-keys entry is ignored, not a crash",
+          control.unmask_keys("bsve1:%%%"), {})
+    shipped = json.load(open(os.path.join(os.path.dirname(HERE), "control.json")))
+    check_that("the app ships with the group's shared keys",
+               set(control.unmask_keys(shipped.get("shared_keys"))) >=
+               {"GEMINI_API_KEY", "GROQ_API_KEY"})
+finally:
+    control._STATE_DIR = _saved_state
+
 # --------------------------------------------------------------------------
 
 print(f"{len(PASSED)} passed")

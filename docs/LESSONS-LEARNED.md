@@ -113,6 +113,35 @@ anyone's computer:
   downloads built only from a version that passed them — each build checking
   itself again before it is zipped.
 
+## Simple to use, and nothing left to chance (version 1.2)
+
+Asked for: a closing slide that stays changed, no keys to set up, nothing
+that times out — then a line-by-line review of everything that touches the
+network, the disk or another program. What it found, and what changed:
+
+| What was found | What it would have done | What changed |
+|---|---|---|
+| **A countdown of 2½–4 minutes on Windows** | Each second of the countdown was a separate input to FFmpeg; three minutes made a command longer than Windows allows (32,767 characters) and **the render failed** — only on Windows, only for long discussions, so no test caught it | The countdown is one list of frames, a single input however long. `tests/run_long_countdown.py` renders a 3-minute one on Mac and Windows for every change, in a folder named like an awkward Windows user name |
+| **A recording with glitches** | FFmpeg's complaints filled a pipe nobody was reading; FFmpeg stopped and **the render froze forever** | Its complaints go to a file |
+| **Every upload was saved as "source.mp4"** | Each new lesson's finished video **replaced last week's** | Finished videos are named after the recording and never overwrite: a name already taken gets "(2)". Copied under a temporary name and renamed only when complete |
+| A Windows user name with an accent or an apostrophe | The list used to join pieces was written in the wrong text encoding and unescaped: **the join failed or crashed** | Always UTF-8, quotes escaped |
+| No overall time limit on the AI | A service that accepts a request and never answers could leave "Asking the AI…" up **for over an hour** | Five minutes in all, with time kept back for the other service, then keyword matching |
+| A shared key turned down | Stopped the whole search, even with a second service available | Tries the other service first |
+| One dropped connection | Ended an online transcription, or restarted a multi-gigabyte download from zero | Retried; downloads pick up where they stopped |
+| Analysing again after fixing a typo in the outline | Listened to the whole recording again (10–30 minutes) | The transcript is kept per recording and reused |
+| One slow self-check during an update | Marked that version bad on that computer for good | Tried once more before it is refused; one update at a time |
+| macOS's "App Nap", a laptop going to sleep | Slowed or paused a long render while nobody was watching | The app tells macOS not to nap it, and holds off sleep (not the screen) only while it works |
+| Opening the app again after closing its tab | **On a Mac nothing happened** (macOS just "activates" a running app); on Windows a second copy started | The launcher starts the app and steps aside; opening it again finds the running copy and reopens the page. The app stops itself a few minutes after its last tab closes — never mid-job |
+| "2:30" typed as a question's discussion time | Read as 230 seconds | "90", "2:30" and "2 min" all mean what they say |
+| Two settings saved at the same moment; Windows briefly locking a file | One silently lost | Saved as one locked step, retried if Windows is holding the file |
+
+What a person now sees: no key to find (the group's free-tier keys come with
+the app and can be swapped for everyone by editing `control.json`), settings
+and slides remembered, past speakers one click away, a **Choose the video…**
+button that opens Finder or File Explorer, a timings table without the
+technical columns unless asked for, retries kept "behind the scenes", and a
+**Start the next video** button.
+
 ---
 
 ## The rules these add up to
@@ -136,3 +165,8 @@ anyone's computer:
    after the previous one's material; principles and questions are read word
    for word. A placement that contradicts the outline is wrong, whatever the
    model says.
+9. **Every wait has an end.** Every network call, every program the app runs
+   and the AI search as a whole has a time limit, and every limit has a
+   fallback that still produces a video.
+10. **Never overwrite what somebody made.** A finished video, a saved slide,
+    a setting: written beside the old one and swapped in only when complete.

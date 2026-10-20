@@ -185,24 +185,11 @@ def asset_default(name: str) -> str:
     return ""
 
 
-def save_upload(upload, name: str) -> str:
-    """Write a sidebar image upload to disk once and return its path."""
-    if upload is None:
-        return ""
-    path = os.path.join(workdir(), f"{name}{os.path.splitext(upload.name)[1]}")
-    marker = f"{name}_key"
-    stamp = f"{upload.name}-{upload.size}"
-    if st.session_state.get(marker) != stamp or not os.path.exists(path):
-        with open(path, "wb") as handle:
-            handle.write(upload.getbuffer())
-        st.session_state[marker] = stamp
-    return path
-
-
 def secret(name: str) -> str:
     """
-    Read a key: st.secrets, then the environment, then the group's shared
-    keys (fetched once with the group code and cached on this computer).
+    Read a key: st.secrets, then the environment, then a key saved on this
+    computer, then a group vault (if one is configured), and finally the
+    group's shared keys that come with the app — so nobody has to set one up.
     """
     try:
         if name in st.secrets:
@@ -214,7 +201,11 @@ def secret(name: str) -> str:
     own = control.saved_keys().get(name, "")
     if own:
         return own
-    return control.shared_keys().get(name, "")
+    if control.vault_url():
+        vaulted = control.shared_keys().get(name, "")
+        if vaulted:
+            return vaulted
+    return control.built_in_keys().get(name, "")
 
 
 def has_any_key() -> bool:
@@ -252,13 +243,7 @@ def cues_from_table(edited, plans, discussion_seconds: float, caption_seconds: f
         wants_timer = bool(row.get("Timer", False))
         plan = plans.get(str(row["Point"]))
         own = row.get("Discussion (s)")
-        timer_seconds = discussion_seconds
-        try:
-            digits = "".join(ch for ch in str(own or "") if ch.isdigit() or ch == ".")
-            if digits and 1.0 <= float(digits) <= 600.0:
-                timer_seconds = float(digits)
-        except (TypeError, ValueError):
-            pass
+        timer_seconds = editor.parse_seconds(own) or discussion_seconds
         cues.append(
             editor.Cue(
                 text=str(row["Point"]),
@@ -278,18 +263,283 @@ def cues_from_table(edited, plans, discussion_seconds: float, caption_seconds: f
     return cues
 
 
+IDLE_QUIT_MINUTES = 5
+
+
+@st.cache_resource
+def _activity() -> dict:
+    """Shared by every page load in this run of the app: how many jobs are going."""
+    return {"busy": 0}
+
+
+@st.cache_resource
+def _quit_when_closed() -> bool:
+    """
+    In the packaged app, stop a few minutes after the last tab is closed.
+
+    The app has no window of its own, so without this it would carry on
+    running unseen after somebody closes the browser. Never while a lesson
+    is being analysed or rendered — closing the tab mid-render must not
+    lose the video.
+    """
+    if not os.environ.get("BSVE_PACKAGED"):
+        return False
+    import threading
+
+    def watch():
+        try:
+            from streamlit.runtime import Runtime
+        except Exception:
+            return
+        idle_since = None
+        while True:
+            time.sleep(20)
+            try:
+                viewers = Runtime.instance()._session_mgr.num_active_sessions()
+            except Exception:
+                return                       # can't tell, so never guess
+            if viewers or _activity()["busy"]:
+                idle_since = None
+                continue
+            idle_since = idle_since or time.time()
+            if time.time() - idle_since >= IDLE_QUIT_MINUTES * 60:
+                try:
+                    os.remove(os.path.join(os.environ.get("BSVE_HOME", ""), "running.json"))
+                except OSError:
+                    pass
+                os._exit(0)
+
+    threading.Thread(target=watch, daemon=True, name="quit-when-closed").start()
+    return True
+
+
+_quit_when_closed()
+
+
+class stay_awake:
+    """
+    Keep the computer from going to sleep while a lesson is being worked on.
+
+    A full lesson takes several minutes to analyse and render; a laptop that
+    dozes off half way would pause the job and leave the person wondering
+    why it is taking so long. The screen may still turn off — only sleep is
+    held off, and only until the job finishes.
+    """
+
+    def __enter__(self):
+        self._process = None
+        _activity()["busy"] += 1
+        try:
+            if sys.platform == "darwin":
+                self._process = subprocess.Popen(
+                    ["caffeinate", "-i", "-w", str(os.getpid())],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+            elif sys.platform.startswith("win"):
+                import ctypes
+
+                # ES_CONTINUOUS | ES_SYSTEM_REQUIRED, for this working thread.
+                ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | 0x00000001)
+        except Exception:
+            pass
+        return self
+
+    def __exit__(self, *exc):
+        _activity()["busy"] = max(_activity()["busy"] - 1, 0)
+        try:
+            if self._process is not None:
+                self._process.terminate()
+            elif sys.platform.startswith("win"):
+                import ctypes
+
+                ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
+        except Exception:
+            pass
+        return False
+
+
+VIDEO_EXTENSIONS = ("mp4", "mov", "m4v", "mkv", "webm", "avi", "mts", "3gp")
+
+
+def windows_picker_command(show: bool = True) -> list:
+    """The PowerShell command for File Explorer's own "choose a file" window."""
+    patterns = ";".join(f"*.{e}" for e in VIDEO_EXTENSIONS)
+    script = (
+        "Add-Type -AssemblyName System.Windows.Forms;"
+        "[Console]::OutputEncoding=[Text.Encoding]::UTF8;"
+        "$owner=New-Object System.Windows.Forms.Form -Property @{TopMost=$true};"
+        "$d=New-Object System.Windows.Forms.OpenFileDialog;"
+        "$d.Title='Choose the lesson recording';"
+        f"$d.Filter='Videos|{patterns}|All files|*.*';"
+        + ("if($d.ShowDialog($owner) -eq 'OK'){Write-Output $d.FileName}" if show
+           else "Write-Output 'PICKER READY'")
+    )
+    return ["powershell", "-NoProfile", "-STA", "-NonInteractive",
+            "-ExecutionPolicy", "Bypass", "-Command", script]
+
+
+def pick_video_file() -> tuple:
+    """
+    Open the computer's own "choose a file" window. (path, problem).
+
+    The app runs on this computer, so the ordinary Finder / File Explorer
+    window can hand over the file where it is — nothing is copied or
+    uploaded, whatever its size. Returns ("", "") if the person cancelled.
+    """
+    try:
+        if sys.platform == "darwin":
+            script = (
+                'tell me to activate\n'
+                'POSIX path of (choose file with prompt '
+                '"Choose the lesson recording" of type {"public.movie", '
+                '"public.audiovisual-content"})'
+            )
+            result = subprocess.run(["osascript", "-e", script],
+                                    capture_output=True, text=True, timeout=1800)
+            if result.returncode != 0:
+                return "", ""                    # cancelled
+            return result.stdout.strip(), ""
+        if sys.platform.startswith("win"):
+            result = subprocess.run(
+                windows_picker_command(), capture_output=True, timeout=1800,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            return result.stdout.decode("utf-8", "replace").strip(), ""
+    except subprocess.TimeoutExpired:
+        return "", ""
+    except Exception:
+        pass
+    return "", ("The file window couldn't be opened here — paste where the "
+                "video is in the box below instead.")
+
+
 # --------------------------------------------------------------------------
 # Sidebar: settings
 # --------------------------------------------------------------------------
+#
+# Everything here is remembered on this computer: change a setting once and
+# it stays that way for every video until it is changed again.
+
+PREF_CHOICES = {
+    "quality": ["small", "balanced", "best"],
+    "card_style": ["fullscreen", "caption"],
+    "model_size": transcriber.LOCAL_MODEL_SIZES,
+}
+PREF_RANGES = {
+    "discussion_seconds": (10, 300),
+    "bookend_seconds": (2, 15),
+    "caption_seconds": (3, 20),
+    "threads": (1, 16),
+}
+PREF_DEFAULTS = {
+    "discussion_seconds": int(matcher.APPLICATION_PAUSE_SECONDS),
+    "quality": "small" if HOSTED else "balanced",
+    "trim_ends": True,
+    "use_bookends": True,
+    "bookend_seconds": 5,
+    "card_style": "fullscreen",
+    "overview_card": True,
+    "soft_transitions": False,
+    "caption_seconds": 8,
+    "double_check": True,
+    "model_size": "base",
+    "language": "en",
+    "threads": max(1, min(os.cpu_count() or 4, 16)),
+}
+
+
+def remembered(name: str) -> str:
+    """
+    The widget key for a remembered setting, started from what was saved.
+
+    A saved value that no longer fits (an option renamed, a range narrowed
+    in an update) falls back to the default instead of breaking the page.
+    """
+    key = f"pref_{name}"
+    if key not in st.session_state:
+        value = control.prefs().get(name, PREF_DEFAULTS[name])
+        default = PREF_DEFAULTS[name]
+        if name in PREF_CHOICES and value not in PREF_CHOICES[name]:
+            value = default
+        elif name in PREF_RANGES:
+            low, high = PREF_RANGES[name]
+            try:
+                value = int(min(max(int(value), low), high))
+            except (TypeError, ValueError):
+                value = default
+        elif isinstance(default, bool):
+            value = bool(value)
+        elif not isinstance(value, type(default)):
+            value = default
+        st.session_state[key] = value
+    return key
+
+
+def save_prefs() -> None:
+    for name in PREF_DEFAULTS:
+        key = f"pref_{name}"
+        if key in st.session_state:
+            control.set_pref(name, st.session_state[key])
+
+
+def artwork_in_use(name: str) -> str:
+    """The slide or logo a video will use: the one saved here, else the built-in one."""
+    return control.saved_artwork(name) or asset_default(name)
+
+
+def artwork_editor(name: str, label: str, types: list) -> None:
+    """Show a slide, and let it be replaced for good or put back."""
+    own = control.saved_artwork(name)
+    current = own or asset_default(name)
+    if current:
+        st.image(current, caption=f"{label}" + (" — your own" if own else ""),
+                 width="stretch")
+    else:
+        st.caption(f"No {label.lower()} yet.")
+    round_key = f"{name}_upload_round"
+    upload = st.file_uploader(
+        f"Replace the {label.lower()}", type=types,
+        key=f"{name}_upload_{st.session_state.get(round_key, 0)}",
+        help="Saved on this computer and used for every video until you "
+             "change it again. A PDF works too — its first page is used. "
+             "Any shape is fine; it is fitted to a widescreen frame.",
+    )
+    if upload is not None:
+        temporary = os.path.join(workdir(), f"upload_{name}{os.path.splitext(upload.name)[1]}")
+        with open(temporary, "wb") as handle:
+            handle.write(upload.getbuffer())
+        try:
+            control.save_artwork(name, temporary)
+            st.session_state[round_key] = st.session_state.get(round_key, 0) + 1
+            st.session_state.flash = (
+                f"New {label.lower()} saved — every video will use it until "
+                "you change it."
+            )
+            st.rerun()
+        except ValueError as exc:
+            st.error(str(exc))
+        finally:
+            try:
+                os.remove(temporary)
+            except OSError:
+                pass
+    if own and asset_default(name):
+        if st.button(f"Put back the original {label.lower()}", key=f"{name}_reset",
+                     width="stretch"):
+            control.forget_artwork(name)
+            st.rerun()
+
 
 with st.sidebar:
-    st.header("⚙️ Settings")
+    if st.session_state.get("flash"):
+        st.success(st.session_state.pop("flash"))
 
-    # The two things a leader might actually change. Everything else sits
-    # under Advanced, with defaults that are right for a normal lesson.
+    st.header("⚙️ Settings")
+    st.caption("Remembered on this computer until you change them.")
+
     discussion_seconds = st.slider(
-        "Discussion time after each application", 10, 300,
-        int(matcher.APPLICATION_PAUSE_SECONDS), step=5,
+        "Discussion time after each application (seconds)", 10, 300, step=5,
+        key=remembered("discussion_seconds"),
         help="A countdown of this length follows every application question. "
              "The speaker's own wait in the recording, however long, is cut "
              "out and replaced by it, so the video moves straight on to where "
@@ -298,136 +548,44 @@ with st.sidebar:
     )
     quality = st.selectbox(
         "Video quality",
-        options=["small", "balanced", "best"],
-        index=0 if HOSTED else 1,
+        options=PREF_CHOICES["quality"],
+        key=remembered("quality"),
         format_func=lambda key: {
-            "small": "Smaller file — quickest to download",
+            "small": "Smaller file — quickest to share",
             "balanced": "Balanced (recommended)",
             "best": "Best quality — largest file",
         }[key],
         help="Measured on a 23-minute lesson: smaller ≈ 156 MB, balanced "
              "≈ 224 MB, best ≈ 400 MB. Balanced is a good teaching video; "
-             "smaller is barely distinguishable and much easier to move about.",
+             "smaller is barely distinguishable and much easier to send.",
     )
     trim_ends = st.checkbox(
         "Trim the setup and the walk-off",
-        value=True,
+        key=remembered("trim_ends"),
         help="Starts the video on the teacher's first sentence — not the "
              "seconds of setting up the camera — and ends it just after the "
              "closing prayer and any sign-off, before they get up.",
     )
 
-    with st.expander("Advanced settings", expanded=False):
-        st.markdown("**AI matching**")
-        provider = st.selectbox(
-            "Provider",
-            options=list(matcher.PROVIDERS.keys()),
-            format_func=lambda key: matcher.PROVIDERS[key]["label"],
-            help="Both have free tiers. Gemini is the most generous.",
+    st.subheader("🖼 Opening and closing slides")
+    use_bookends = st.checkbox(
+        "Show them at the start and end", key=remembered("use_bookends"),
+    )
+    if use_bookends:
+        bookend_seconds = st.slider(
+            "Seconds each is shown", 2, 15, key=remembered("bookend_seconds"),
         )
-        provider_info = matcher.PROVIDERS[provider]
-        default_key = secret("GEMINI_API_KEY" if provider == "gemini" else "GROQ_API_KEY")
-        llm_api_key = st.text_input(
-            "API key",
-            value=default_key,
-            type="password",
-            help=f"Free key: {provider_info['key_url']}",
-        )
-        llm_model = st.selectbox(
-            "Model",
-            options=matcher.model_options(provider),
-            help="'auto' tries the best model first and moves down the list if one "
-                 "is retired, rate limited or overloaded.",
-        )
-        double_check = st.checkbox(
-            "Double-check with a second model",
-            value=True,
-            help="Runs the matching twice using two different models and compares "
-                 "the answers. Points both models agree on are marked verified. "
-                 "It uses a second model, so it draws on that model's separate "
-                 "daily allowance rather than doubling up on the first.",
-        )
-        backup_provider = "groq" if provider == "gemini" else "gemini"
-        backup_key = st.text_input(
-            f"Backup key — {matcher.PROVIDERS[backup_provider]['label']}",
-            value=secret("GROQ_API_KEY" if backup_provider == "groq" else "GEMINI_API_KEY"),
-            type="password",
-            help="A completely separate free allowance. When the first provider "
-                 "is used up for the day, the app switches to this instead of "
-                 "dropping to offline matching.",
-        )
-        st.caption(
-            f"Get free keys → [{provider}]({provider_info['key_url']}) · "
-            f"[{backup_provider}]({matcher.PROVIDERS[backup_provider]['key_url']})"
-        )
+        artwork_editor("intro", "Opening slide", editor.SLIDE_TYPES)
+        artwork_editor("outro", "Closing slide", editor.SLIDE_TYPES)
+    else:
+        bookend_seconds = int(st.session_state.get("pref_bookend_seconds", 5))
 
-        # --- what is left of today's free allowance --------------------------
-        with st.expander("Today's free usage", expanded=False):
-            rows = matcher.remaining_today(provider)
-            total_used = sum(u for _, u, _ in rows)
-            total_cap = sum(c for _, _, c in rows)
-            st.progress(
-                min(total_used / max(total_cap, 1), 1.0),
-                text=f"{total_used} of {total_cap} requests used today",
-            )
-            for name, used, cap in rows:
-                bar = "█" * min(used, cap) + "·" * max(cap - used, 0)
-                st.caption(f"`{bar}` {name} — {used}/{cap}")
-            st.caption(
-                f"The free tier allows {matcher.DAILY_FREE_REQUESTS} requests per "
-                "model per day. Repeating an analysis you have already run costs "
-                "nothing — the answer is reused."
-            )
-        st.divider()
-        st.markdown("**Transcription**")
-        # A shared container has neither the memory to hold a speech model nor the
-        # processor to spare, so hosted deployments always use the hosted service.
-        if HOSTED or not transcriber.LOCAL_AVAILABLE:
-            engine_options = ["groq"]
-            st.caption(
-                "Transcription runs through Groq here. Running the app on your "
-                "own computer adds an offline option that needs no key."
-            )
-        else:
-            engine_options = ["local", "groq"]
-
-        engine = st.radio(
-            "Engine",
-            options=engine_options,
-            format_func=lambda key: {
-                "local": "On this computer (faster-whisper, no key)",
-                "groq": "Hosted (Groq Whisper, needs a free key)",
-            }[key],
-            help=(
-                "On this computer keeps everything private and offline but is "
-                "slower. Hosted is much faster and is the right choice when the "
-                "app is running on a free web host."
-            ),
-        )
-        if engine == "local":
-            model_size = st.select_slider(
-                "Accuracy vs speed",
-                options=transcriber.LOCAL_MODEL_SIZES,
-                value="base",
-                help="'base' is a good balance. 'small' is noticeably better on "
-                     "echoey room audio but roughly 2-3x slower.",
-            )
-            groq_key = ""
-        else:
-            model_size = "base"
-            groq_key = st.text_input(
-                "Groq API key",
-                value=llm_api_key if provider == "groq" else secret("GROQ_API_KEY"),
-                type="password",
-            )
-            st.caption("Free key → https://console.groq.com/keys")
-
-        language = st.text_input("Spoken language code", value="en", max_chars=5)
-        st.divider()
-        st.markdown("**Graphics**")
+    with st.expander("More settings", expanded=False):
+        st.markdown("**Cards**")
         card_style = st.radio(
             "Point style",
-            options=["fullscreen", "caption"],
+            options=PREF_CHOICES["card_style"],
+            key=remembered("card_style"),
             format_func=lambda key: {
                 "fullscreen": "Full-screen cards (template)",
                 "caption": "Caption over the video",
@@ -436,54 +594,135 @@ with st.sidebar:
                  "the teaching continues underneath. Captions keep the picture "
                  "visible and put a small card along the bottom.",
         )
-        caption_seconds = st.slider(
-            "Fallback seconds on screen", 3, 20, 8,
-            help="Only used when a point has no end time of its own. Normally "
-                 "each card stays up for as long as the point is being taught, "
-                 "with a floor so it can be written down.",
-        )
         overview_card = st.checkbox(
             "Show the takeaway and divisions together on one card",
-            value=True,
+            key=remembered("overview_card"),
             help="Shown from just before the takeaway is spoken until the first "
                  "division is introduced — long enough to be written down. The "
                  "divisions then each get their own card when introduced.",
         )
         soft_transitions = st.checkbox(
-            "Soften the cuts",
-            value=False,
+            "Soften the cuts", key=remembered("soft_transitions"),
             help="Off matches the reference style: graphics cut hard in and hard "
                  "out. On gives a quarter-second dissolve.",
         )
-
-        logo_file = st.file_uploader(
-            "Logo for the top right of each card (optional)",
-            type=["png", "jpg", "jpeg", "webp"],
-            help=f"Sits in a reserved {editor.CARD_LOGO_BOX}×{editor.CARD_LOGO_BOX} "
-                 "pixel square. A PNG with a transparent background works best.",
+        caption_seconds = st.slider(
+            "Fallback seconds on screen", 3, 20, key=remembered("caption_seconds"),
+            help="Only used when a point has no end time of its own. Normally "
+                 "each card stays up for as long as the point is being taught, "
+                 "with a floor so it can be written down.",
         )
+        st.markdown("**Logo on each card**")
+        artwork_editor("logo", "Logo", ["png", "jpg", "jpeg", "webp"])
 
-        st.markdown("**Intro and outro**")
-        _assets = {
-            name: asset_default(name) for name in ("intro", "outro", "logo")
-        }
-        _found = [name for name, path in _assets.items() if path]
-        if _found:
-            st.caption(f"Using {', '.join(_found)} from the assets folder.")
-        if not _assets["intro"] and not _assets["outro"]:
+        st.divider()
+        st.markdown("**Listening to the recording**")
+        # A shared container has neither the memory to hold a speech model nor the
+        # processor to spare, so hosted deployments always use the hosted service.
+        if HOSTED or not transcriber.LOCAL_AVAILABLE:
+            engine_options = ["groq"]
             st.caption(
-                "No intro or outro set, so none will appear in the video. Upload "
-                "them above, or drop `intro.png` and `outro.png` into the "
-                "`assets` folder to have them used every time."
+                "Transcription runs through Groq here. Running the app on your "
+                "own computer adds an offline option."
             )
-        intro_file = st.file_uploader(
-            "Opening image", type=["png", "jpg", "jpeg", "webp"], key="intro_img"
+        else:
+            engine_options = ["local", "groq"]
+        engine = st.radio(
+            "Engine",
+            options=engine_options,
+            format_func=lambda key: {
+                "local": "On this computer (private, works offline)",
+                "groq": "Online (Groq — faster)",
+            }[key],
+            help="On this computer keeps the recording private and works "
+                 "offline. Online is faster on an older computer.",
         )
-        outro_file = st.file_uploader(
-            "Closing image", type=["png", "jpg", "jpeg", "webp"], key="outro_img"
+        if engine == "local":
+            model_size = st.select_slider(
+                "Accuracy vs speed", options=PREF_CHOICES["model_size"],
+                key=remembered("model_size"),
+                help="'base' is a good balance. 'small' is noticeably better on "
+                     "echoey room audio but roughly 2-3x slower.",
+            )
+        else:
+            model_size = "base"
+        language = st.text_input("Spoken language code", max_chars=5,
+                                 key=remembered("language"))
+
+        st.divider()
+        st.markdown("**Finding each point (AI)**")
+        provider = st.selectbox(
+            "Service",
+            options=list(matcher.PROVIDERS.keys()),
+            format_func=lambda key: matcher.PROVIDERS[key]["label"],
+            help="Both are free. If one is busy or used up for the day, the "
+                 "app switches to the other automatically.",
         )
-        bookend_seconds = st.slider("Seconds each is held", 2, 15, 5)
-        threads = st.slider("CPU threads for rendering", 1, 16, 4)
+        provider_info = matcher.PROVIDERS[provider]
+        backup_provider = "groq" if provider == "gemini" else "gemini"
+        llm_model = st.selectbox(
+            "Model",
+            options=matcher.model_options(provider),
+            help="'auto' tries the best model first and moves down the list if one "
+                 "is retired, rate limited or overloaded.",
+        )
+        double_check = st.checkbox(
+            "Double-check with a second model", key=remembered("double_check"),
+            help="Runs the matching twice using two different models and compares "
+                 "the answers. Points both models agree on are marked verified.",
+        )
+        st.markdown("**AI keys**")
+        _own = control.saved_keys()
+        if has_own_keys():
+            st.caption("🔑 Keys are set by whoever runs this copy.")
+        elif _own.get("GEMINI_API_KEY") or _own.get("GROQ_API_KEY"):
+            st.caption("🔑 Using your own key, saved on this computer.")
+        elif control.built_in_keys() or control.shared_keys():
+            st.caption("🔑 Using the group's shared keys — nothing to set up.")
+        else:
+            st.caption("No AI key available — points are matched by keywords only.")
+        _replacement = st.text_input(
+            "Use my own Google key instead (optional)", type="password",
+            help=f"Only needed if the shared keys are busy every day. Free from "
+                 f"{control.GEMINI_KEY_PAGE}",
+        )
+        _kc = st.columns(2)
+        if _kc[0].button("Save my key", width="stretch", disabled=not _replacement):
+            with st.spinner("Checking the key with Google…"):
+                _ok, _note = control.check_gemini_key(_replacement)
+            if _ok:
+                control.save_key("GEMINI_API_KEY", _replacement)
+                st.session_state.flash = "Your key is saved and will be used from now on."
+                st.rerun()
+            else:
+                st.error(_note)
+        if _kc[1].button("Use shared keys", width="stretch",
+                         disabled=not (_own.get("GEMINI_API_KEY") or _own.get("GROQ_API_KEY"))):
+            control.forget_saved_keys()
+            st.rerun()
+        if control.vault_url() and not has_own_keys():
+            _new_code = st.text_input(
+                "Group code", value=control.group_code(), type="password",
+                help="Connects this copy to the group's key vault.",
+            )
+            if st.button("Reconnect", width="stretch"):
+                control.set_group_code(_new_code)
+                _ok, _, _note = control.connect(_new_code)
+                (st.success if _ok else st.error)(_note)
+
+        # --- what is left of today's free allowance ----------------------
+        rows = matcher.remaining_today(provider)
+        total_used = sum(u for _, u, _ in rows)
+        total_cap = sum(c for _, _, c in rows)
+        st.progress(
+            min(total_used / max(total_cap, 1), 1.0),
+            text=f"This computer: {total_used} of {total_cap} free requests used today",
+        )
+
+        st.divider()
+        st.markdown("**This computer**")
+        threads = st.slider("Processor threads for rendering", 1, 16,
+                            key=remembered("threads"))
         render_engine = st.radio(
             "Rendering engine",
             options=["auto", "moviepy"],
@@ -491,58 +730,34 @@ with st.sidebar:
                 "auto": "Fast (recommended)",
                 "moviepy": "Compatible (slower)",
             }[key],
-            help=(
-                "Fast hands the whole job to FFmpeg in one pass — about 20x "
-                "quicker on a full-length lesson. Switch to Compatible only if a "
-                "particular file refuses to render."
-            ),
+            help="Fast hands the whole job to FFmpeg — about 20x quicker on a "
+                 "full-length lesson. Switch to Compatible only if a "
+                 "particular file refuses to render.",
         )
         st.caption(f"Overlay font: {editor.font_report()}")
 
+    save_prefs()
+
+    # The keys actually used: a key typed for this session beats everything.
+    llm_api_key = secret("GEMINI_API_KEY" if provider == "gemini" else "GROQ_API_KEY")
+    backup_key = secret("GROQ_API_KEY" if backup_provider == "groq" else "GEMINI_API_KEY")
+    groq_key = secret("GROQ_API_KEY") if engine == "groq" else ""
+
     st.divider()
-    st.subheader("About this copy")
-    st.caption(f"Version {control.VERSION}")
-    with st.expander("AI key", expanded=False):
-        if control.saved_keys().get("GEMINI_API_KEY"):
-            st.caption("🔑 Your own Google key is saved on this computer.")
-        elif control.shared_keys():
-            st.caption("🔑 Using the group's shared keys.")
-        elif has_own_keys():
-            st.caption("🔑 Keys are set by whoever runs this copy.")
-        else:
-            st.caption("No key connected — matching by keywords only.")
-        _replacement = st.text_input(
-            "Replace with a Google key", type="password",
-            help=f"Free from {control.GEMINI_KEY_PAGE}",
-        )
-        _kc = st.columns(2)
-        if _kc[0].button("Save key", width="stretch"):
-            _ok, _note = control.check_gemini_key(_replacement)
-            if _ok:
-                control.save_key("GEMINI_API_KEY", _replacement)
-                st.rerun()
-            else:
-                st.error(_note)
-        if _kc[1].button("Forget key", width="stretch"):
-            control.forget_saved_keys()
-            st.session_state.pop("skip_key_setup", None)
-            st.rerun()
-    if control.vault_url() and not has_own_keys():
-        with st.expander("Group code"):
-            _new_code = st.text_input(
-                "Group code", value=control.group_code(), type="password",
-                help="The word your group was given. It connects this copy "
-                     "to the shared AI keys so nobody needs their own.",
-            )
-            if st.button("Reconnect", width="stretch"):
-                control.set_group_code(_new_code)
-                _ok, _, _note = control.connect(_new_code)
-                (st.success if _ok else st.error)(_note)
-                if _ok:
-                    st.rerun()
+    st.subheader("Help")
+    st.caption(f"Bible Study Video Editor · version {control.VERSION}")
     if st.button("Check for updates", width="stretch"):
         control.fetch_control(force=True)
+        _now = control.update_status()
+        st.session_state.flash = (
+            f"Version {_now['latest']} is available — see the top of the page."
+            if _now["update_available"] else "You have the latest version."
+        )
         st.rerun()
+    if st.button("Check this computer", width="stretch",
+                 help="Runs every accuracy check and a short test render to "
+                      "confirm this copy works here. About half a minute."):
+        st.session_state.run_self_check = True
     if os.environ.get("BSVE_LAUNCHER_PID") and st.button(
         "Quit the app", width="stretch",
         help="Stops the app on this computer. Open it again any time.",
@@ -551,31 +766,33 @@ with st.sidebar:
         import signal as _signal
 
         try:
+            os.remove(os.path.join(os.environ.get("BSVE_HOME", ""), "running.json"))
+        except OSError:
+            pass
+        try:
             os.kill(int(os.environ["BSVE_LAUNCHER_PID"]), _signal.SIGTERM)
         except Exception:
             pass
         os._exit(0)
-    if st.button("Check this computer", width="stretch",
-                 help="Runs every accuracy check and a short test render to "
-                      "confirm this copy works here. About half a minute."):
-        st.session_state.run_self_check = True
 
-    _reporting = st.toggle(
-        "Send anonymous usage statistics",
-        value=control.telemetry_enabled(),
-        help="Helps whoever maintains this see which versions are in use and "
-             "whether renders are succeeding.",
-    )
-    if _reporting != control.telemetry_enabled():
-        control.set_telemetry(_reporting)
-    with st.expander("What gets sent"):
+    with st.expander("Privacy"):
+        _reporting = st.toggle(
+            "Send anonymous usage statistics",
+            value=control.telemetry_enabled(),
+            help="Helps whoever maintains this see which versions are in use and "
+                 "whether renders are succeeding.",
+        )
+        if _reporting != control.telemetry_enabled():
+            control.set_telemetry(_reporting)
         st.caption(
-            "A random identifier for this installation, the version, whether "
-            "this is a Mac or a Windows PC, what happened (a lesson was "
-            "analysed, a render finished or failed), how long the lesson was "
-            "and how long it took.\n\n"
+            "Sent, if switched on: a random identifier for this installation, "
+            "the version, Mac or Windows, what happened (a lesson analysed, a "
+            "render finished or failed), how long the lesson was and how long "
+            "it took.\n\n"
             "**Never sent:** the video, the audio, the transcript, your "
-            "outline, your API keys, or any file name or path."
+            "outline, your keys, or any file name or path. The recording is "
+            "listened to on this computer; only the transcript text goes to "
+            "the AI service to find each point."
         )
 
     _available = transcriber.available_memory_mb()
@@ -598,10 +815,10 @@ with st.sidebar:
 
 st.title("📖 Bible Study Video Editor")
 st.write(
-    "Upload the recording, paste in the lesson outline, and the app works out "
-    "when each point is taught — then builds the finished video with the "
-    "speaker's lower third, a full-screen card for every point, and your "
-    "intro and outro."
+    "Choose the recording, pick the speaker, paste in the lesson outline — "
+    "the app finds when each point is taught and builds the finished video "
+    "with the speaker's name, a card for every point, discussion countdowns "
+    "and your opening and closing slides."
 )
 
 _status = control.update_status()
@@ -735,7 +952,7 @@ if not has_any_key() and not st.session_state.get("skip_key_setup"):
 if not has_any_key():
     st.warning(
         "No AI key is connected, so points are matched by keywords only — much "
-        "less accurate. Connect one under **About this copy → AI key** in the "
+        "less accurate. Add one under **More settings → AI keys** in the "
         "sidebar."
     )
 
@@ -763,7 +980,7 @@ with left:
         format_func=lambda key: {
             "link": "Paste a link" + (" (recommended)" if HOSTED else ""),
             "upload": "Upload a file",
-            "path": "Use a file already on this computer",
+            "path": "On this computer",
         }[key],
         horizontal=True,
         help=(
@@ -771,8 +988,8 @@ with left:
             "not exhaust this shared server. An upload is held in memory the "
             "whole time."
             if HOSTED else
-            "A full-length lesson is often several gigabytes. Pointing at the "
-            "file on disk skips the copy entirely and starts straight away."
+            "On this computer reads the file where it is — no copying, no "
+            "size limit, and it starts straight away."
         ),
     )
 
@@ -783,6 +1000,7 @@ with left:
     if source == "link":
         link_url = st.text_input(
             "Link to the video",
+            key="link_box",
             placeholder="https://drive.google.com/file/d/…/view",
             help="Google Drive and Dropbox links work. In Drive, set sharing "
                  "to 'Anyone with the link' first.",
@@ -806,6 +1024,7 @@ with left:
     elif source == "upload":
         uploaded = st.file_uploader(
             "Video file",
+            key="video_upload",
             type=["mp4", "mov", "m4v", "mkv", "webm"],
             accept_multiple_files=False,
         )
@@ -834,24 +1053,72 @@ with left:
         else:
             st.caption(
                 "Uploads are held in memory while they transfer. For a "
-                "full-length lesson over about 1 GB, switch to *Use a file "
-                "already on this computer* — it reads straight from disk, "
-                "starts immediately and has no size limit."
+                "full-length lesson over about 1 GB, choose *On this "
+                "computer* instead — it reads straight from disk, starts "
+                "immediately and has no size limit."
             )
     else:
+        if st.button("📂  Choose the video…", width="stretch", type="primary"
+                     if not st.session_state.get("local_path_box") else "secondary"):
+            with st.spinner("Waiting for you to pick the file in the window that "
+                            "just opened…"):
+                _picked, _problem = pick_video_file()
+            if _picked:
+                st.session_state.local_path_box = _picked
+                st.rerun()
+            elif _problem:
+                st.warning(_problem)
         local_path = st.text_input(
-            "Full path to the video",
+            "Or paste where it is",
+            key="local_path_box",
             placeholder=(r"C:\Users\you\Videos\lesson.mp4" if sys.platform.startswith("win")
                          else "/Users/you/Movies/lesson.mp4"),
-            help="In Finder: right-click the file, hold Option, choose "
-                 "'Copy … as Pathname', then paste it here.",
+            help=("In File Explorer: hold Shift, right-click the file, choose "
+                  "'Copy as path', then paste it here."
+                  if sys.platform.startswith("win") else
+                  "In Finder: right-click the file, hold Option, choose "
+                  "'Copy … as Pathname', then paste it here."),
         ).strip().strip('"').strip("'")
         if local_path and not os.path.exists(local_path):
-            st.error("No file at that path. Check it and try again.")
+            st.error("No file at that location. Choose it again with the button above.")
+        elif local_path:
+            st.caption(f"🎞 **{os.path.basename(local_path)}**")
 
     st.subheader("2 · The speaker")
-    speaker_name = st.text_input("Name", placeholder="Pastor John Smith")
-    speaker_title = st.text_input("Title", placeholder="Senior Pastor, Grace Fellowship")
+    _known = control.speakers()
+    if _known:
+        def _fill_speaker():
+            picked = st.session_state.get("speaker_pick")
+            for entry in _known:
+                if picked == entry["name"]:
+                    st.session_state.speaker_name_box = entry["name"]
+                    st.session_state.speaker_title_box = entry["title"]
+                    return
+            st.session_state.speaker_name_box = ""
+            st.session_state.speaker_title_box = ""
+
+        st.selectbox(
+            "Pick someone who has spoken before",
+            options=["— Someone new —"] + [entry["name"] for entry in _known],
+            key="speaker_pick",
+            format_func=lambda n: n if n.startswith("—") else next(
+                (f"{e['name']} — {e['title']}" if e["title"] else e["name"])
+                for e in _known if e["name"] == n),
+            on_change=_fill_speaker,
+        )
+    speaker_name = st.text_input("Name", placeholder="Pastor John Smith",
+                                 key="speaker_name_box")
+    speaker_title = st.text_input("Title", placeholder="Teaching Leader",
+                                  key="speaker_title_box")
+    if _known and not str(st.session_state.get("speaker_pick", "—")).startswith("—"):
+        def _forget_speaker():
+            control.forget_speaker(st.session_state.speaker_pick)
+            st.session_state.speaker_pick = "— Someone new —"
+            st.session_state.speaker_name_box = ""
+            st.session_state.speaker_title_box = ""
+
+        st.button("Remove them from the list", key="forget_speaker",
+                  on_click=_forget_speaker)
 
 with right:
     st.subheader("3 · The lesson outline")
@@ -862,6 +1129,7 @@ with right:
 
     takeaway = st.text_area(
         "Takeaway",
+        key="takeaway_box",
         height=80,
         placeholder="God seeks sincere relationship, not hollow religion.",
         help="The one thing the lesson is for. Usually stated near the start.",
@@ -869,6 +1137,7 @@ with right:
 
     divisions_raw = st.text_area(
         "Divisions — one per line",
+        key="divisions_box",
         height=110,
         placeholder="I. Man-initiated Religion (Zechariah 7)\n"
                     "II. God-Initiated Relationship (Zechariah 8)",
@@ -918,6 +1187,7 @@ with right:
                      expanded=False):
         scripture = st.text_area(
             "Passages",
+            key="scripture_box",
             height=180,
             label_visibility="collapsed",
             placeholder="ROMANS 3:23\n“For all have sinned and fall short of the "
@@ -955,9 +1225,9 @@ with right:
             + f"  ·  {sum(_counts.values())} cards in total"
         )
 
-logo_path = save_upload(logo_file, "logo") or asset_default("logo")
-intro_path = save_upload(intro_file, "intro") or asset_default("intro")
-outro_path = save_upload(outro_file, "outro") or asset_default("outro")
+logo_path = artwork_in_use("logo")
+intro_path = artwork_in_use("intro") if use_bookends else ""
+outro_path = artwork_in_use("outro") if use_bookends else ""
 
 outline = {"takeaway": takeaway, "divisions": divisions, "scripture": scripture}
 points = matcher.build_lesson_points(outline)
@@ -992,7 +1262,7 @@ def _load_source(path: str, key: str) -> None:
 
     st.session_state.update(
         video_key=key, video_path=path, segments=None, matches=None,
-        notes=[], output_path=None,
+        notes=[], output_path=None, source_name=os.path.basename(path),
     )
     try:
         st.session_state.video_info = editor.video_info(path)
@@ -1018,6 +1288,7 @@ elif uploaded is not None:
         st.session_state.update(
             video_key=key,
             video_path=path,
+            source_name=uploaded.name,
             segments=None,
             matches=None,
             notes=[],
@@ -1047,14 +1318,15 @@ st.divider()
 
 ready = bool(st.session_state.video_path) and bool(points)
 if not ready:
-    st.info("Upload a video and enter at least one lesson point to begin.")
+    st.info("Choose the recording and enter at least one lesson point to begin.")
 
 if st.button("🔍 Analyse recording", type="primary", disabled=not ready, width="stretch"):
     if not memory_notice(MEMORY_NEEDED_ANALYSE_MB, "analyse this recording"):
         st.stop()
     st.session_state.output_path = None
+    control.remember_speaker(speaker_name, speaker_title)
     try:
-        with st.status("Working…", expanded=True) as status:
+        with stay_awake(), st.status("Working…", expanded=True) as status:
             bar = st.progress(0.0)
             line = st.empty()
 
@@ -1062,16 +1334,27 @@ if st.button("🔍 Analyse recording", type="primary", disabled=not ready, width
                 bar.progress(min(max(fraction, 0.0), 1.0))
                 line.write(message)
 
-            status.update(label="Step 1 of 2 — transcribing the recording")
+            status.update(label="Step 1 of 3 — listening to the recording")
             started = time.time()
-            segments = transcriber.transcribe_video(
-                st.session_state.video_path,
-                engine=engine,
-                model_size=model_size,
-                api_key=groq_key or (llm_api_key if provider == "groq" else ""),
-                language=language.strip() or None,
-                progress_cb=on_progress,
-            )
+            _language = language.strip() or None
+            # The same recording listened to the same way gives the same
+            # words, so a second analysis — after fixing a typo in the
+            # outline, say — skips straight to matching.
+            segments = transcriber.cached_transcript(
+                st.session_state.video_path, engine, model_size, _language)
+            if segments:
+                line.write("Using the transcript made earlier for this recording.")
+            else:
+                segments = transcriber.transcribe_video(
+                    st.session_state.video_path,
+                    engine=engine,
+                    model_size=model_size,
+                    api_key=groq_key or (llm_api_key if provider == "groq" else ""),
+                    language=_language,
+                    progress_cb=on_progress,
+                )
+                transcriber.remember_transcript(
+                    st.session_state.video_path, segments, engine, model_size, _language)
             st.session_state.segments = segments
             status.update(label="Listening for reflection pauses")
             # The transcript already tells us where nobody was speaking, and
@@ -1186,14 +1469,18 @@ if st.button("🔍 Analyse recording", type="primary", disabled=not ready, width
             )
     except Exception as exc:
         if getattr(exc, "is_auth_failure", False) and not has_own_keys():
-            # A shared key was rotated: fetch the new one and say so.
-            _ok, _, _ = control.connect(control.group_code())
+            # A shared key was replaced: fetch the new one and say so.
+            _before = control.built_in_keys()
+            control.fetch_control(force=True)
+            _ok = control.built_in_keys() != _before
+            if not _ok and control.vault_url():
+                _ok, _, _ = control.connect(control.group_code())
             st.error(
-                "The shared AI key was rejected. "
-                + ("A fresh key has been fetched — click Analyse again."
+                "The AI key was turned down. "
+                + ("A fresh one has been fetched — press Analyse again."
                    if _ok else
-                   "Could not fetch a fresh one; check the group code in "
-                   "the sidebar.")
+                   "Press Analyse again to carry on with keyword matching, or "
+                   "add your own free key under **More settings → AI keys**.")
             )
         else:
             st.error(f"Something went wrong: {exc}")
@@ -1228,8 +1515,31 @@ if st.session_state.verdicts:
             "the audio is hard to hear. Read every row before rendering."
         )
 
-    for note in st.session_state.notes or []:
+    # Retries and model hand-offs are the app doing its job; only what changes
+    # how far the timings can be trusted is worth a warning.
+    _technical = re.compile(
+        r"attempt \d|answered by|retrying|reused the saved answer|failed \(|"
+        r"^attempt|switching to|too slow today|turned down|matched by |"
+        r"none of the known models|allowance is used up",
+        re.IGNORECASE,
+    )
+    _notes = list(st.session_state.notes or [])
+    _plain = [n for n in _notes if not _technical.search(n)]
+    _behind = [n for n in _notes if _technical.search(n)]
+    for note in _plain:
+        if "offline keyword matcher" in note or "AI matching unavailable" in note:
+            continue
         st.warning(note)
+    if any("offline keyword matcher" in n for n in _notes):
+        st.warning(
+            "The AI couldn't be reached, so points were placed by matching "
+            "keywords. That is usually close, but read every row before "
+            "rendering — or press Analyse again in a few minutes."
+        )
+    if _behind or any("AI matching unavailable" in n for n in _notes):
+        with st.expander("Behind the scenes"):
+            for note in _notes:
+                st.caption(note)
 
     duration = (info or {}).get("duration", 0.0)
     frame = pd.DataFrame(
@@ -1267,11 +1577,27 @@ if st.session_state.verdicts:
         ]
     )
 
+    _details = st.toggle(
+        "Show what was heard and why",
+        value=False,
+        help="Adds the words the speaker actually said at each point and the "
+             "checks behind every status — handy when a row needs a closer look.",
+    )
+    _columns = ["Show", "Status", "Header", "Point", "Start (s)", "End (s)",
+                "On screen", "Timer", "Discussion (s)", "Cut"]
+    if _details:
+        _columns += ["Heard", "Why"]
+    st.caption(
+        "Untick **Show** to leave a card out. Change **Start**/**End** (in "
+        "seconds) to move one, or **Discussion (s)** to give one question a "
+        "different countdown."
+    )
     edited = st.data_editor(
         frame,
         width="stretch",
         hide_index=True,
         num_rows="fixed",
+        column_order=_columns,
         column_config={
             "Show": st.column_config.CheckboxColumn("Show", width="small"),
             "Status": st.column_config.TextColumn("Status", disabled=True, width="small"),
@@ -1304,11 +1630,10 @@ if st.session_state.verdicts:
                      "countdown. The video picks up where the teacher resumes.",
             ),
             "Discussion (s)": st.column_config.TextColumn(
-                "Discussion (s)", width="small", max_chars=4,
-                help="How long the countdown runs after this question, in "
-                     "seconds. Starts at the sidebar's discussion time; type "
-                     "a different number to change it for this one question "
-                     "only.",
+                "Discussion (s)", width="small", max_chars=8,
+                help="How long the countdown runs after this question. "
+                     "Starts at the sidebar's discussion time; type another "
+                     "for this one question only — 90, 2:30 or 2 min all work.",
             ),
             "Heard": st.column_config.TextColumn("What the speaker said", disabled=True),
             "Why": st.column_config.TextColumn("Checks", disabled=True, width="medium"),
@@ -1482,7 +1807,7 @@ if st.session_state.verdicts:
         try:
             discard_previous_render()
             output_path = os.path.join(workdir(), "bible_study_final.mp4")
-            with st.status("Rendering…", expanded=True) as status:
+            with stay_awake(), st.status("Rendering…", expanded=True) as status:
                 bar = st.progress(0.0)
                 line = st.empty()
 
@@ -1527,7 +1852,12 @@ if st.session_state.verdicts:
                 status.update(label="Render complete", state="complete", expanded=False)
         except Exception as exc:
             control.report_async("render_failed", reason=type(exc).__name__)
-            st.error(f"Rendering failed: {exc}")
+            # Something on this computer may have changed since it was last
+            # checked; look again before the next attempt.
+            control.set_setting("self_check_version", "")
+            st.error(f"Rendering failed: {exc}\n\nThe app will check this "
+                     "computer the next time the page loads — press **Check "
+                     "this computer** in the sidebar to do it now.")
             with st.expander("Technical details"):
                 st.code(traceback.format_exc())
 
@@ -1539,9 +1869,63 @@ MAX_INMEMORY_DOWNLOAD_MB = 400
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 # A packaged app cannot write inside its own bundle, so finished videos go
 # somewhere obvious instead: Movies on a Mac, Videos on Windows.
-VIDEOS_DIR = os.path.join(
-    os.path.expanduser("~"), "Videos" if sys.platform.startswith("win") else "Movies"
-)
+def _videos_folder() -> str:
+    """Movies on a Mac; on Windows the real Videos folder, even if moved to OneDrive."""
+    if sys.platform.startswith("win"):
+        try:
+            import ctypes
+            import uuid as _uuid
+
+            folder_id = _uuid.UUID("{18989B1D-99B5-455B-841C-AB7C74E4DDFC}")  # Videos
+            guid = (ctypes.c_byte * 16).from_buffer_copy(folder_id.bytes_le)
+            found = ctypes.c_wchar_p()
+            if ctypes.windll.shell32.SHGetKnownFolderPath(
+                ctypes.byref(guid), 0, None, ctypes.byref(found)
+            ) == 0 and found.value:
+                path = found.value
+                ctypes.windll.ole32.CoTaskMemFree(found)
+                return path
+        except Exception:
+            pass
+        return os.path.join(os.path.expanduser("~"), "Videos")
+    return os.path.join(os.path.expanduser("~"), "Movies")
+
+
+VIDEOS_DIR = _videos_folder()
+
+
+def save_finished_copy(path: str, folder: str, stem: str) -> str:
+    """
+    Copy the finished video somewhere permanent, never over another one.
+
+    Each render gets its own file: if the name is taken by an earlier video
+    — last week's lesson recorded with the same camera name, say — a number
+    is added rather than replacing it. Copied under a temporary name and
+    renamed only once complete, so a half-copied file is never left looking
+    finished. Returns the saved path ("" if it couldn't be saved).
+    """
+    made = f"{path}:{os.path.getmtime(path)}"
+    done = st.session_state.setdefault("saved_copies", {})
+    if done.get(made) and os.path.exists(done[made]):
+        return done[made]
+    os.makedirs(folder, exist_ok=True)
+    target = os.path.join(folder, f"{stem} - captioned.mp4")
+    number = 2
+    while os.path.exists(target):
+        target = os.path.join(folder, f"{stem} - captioned ({number}).mp4")
+        number += 1
+    partial = target + ".partial"
+    try:
+        shutil.copyfile(path, partial)
+        os.replace(partial, target)
+    except OSError:
+        try:
+            os.remove(partial)
+        except OSError:
+            pass
+        return ""
+    done[made] = target
+    return target
 PACKAGED_OUTPUT_DIR = os.path.join(VIDEOS_DIR, "Bible Study Video Editor")
 IS_PACKAGED = bool(os.environ.get("BSVE_HOME"))
 STATIC_MAX_AGE_HOURS = 6
@@ -1583,6 +1967,26 @@ def publish_for_download(path: str, name: str) -> str:
     except Exception:
         return ""
 
+LESSON_BOXES = ("takeaway_box", "divisions_box", "scripture_box", "link_box",
+                "local_path_box", "speaker_name_box", "speaker_title_box")
+
+
+def start_next_video() -> None:
+    """Clear this lesson so the next one starts on a clean page."""
+    discard_previous_render()
+    # Text boxes are emptied by giving them an empty value; simply forgetting
+    # them lets the browser hand the old text straight back.
+    for key in list(st.session_state.keys()):
+        name = str(key)
+        if name in LESSON_BOXES or name.startswith(("principles_", "applications_")):
+            st.session_state[key] = ""
+    st.session_state.speaker_pick = "— Someone new —"
+    for key, value in DEFAULTS.items():
+        st.session_state[key] = value
+    for key in ("source_name", "saved_copies", "video_upload"):
+        st.session_state.pop(key, None)
+
+
 if st.session_state.output_path and os.path.exists(st.session_state.output_path):
     path = st.session_state.output_path
     size_mb = os.path.getsize(path) / (1024 * 1024)
@@ -1594,11 +1998,16 @@ if st.session_state.output_path and os.path.exists(st.session_state.output_path)
     if size_mb <= 60:
         st.video(path)
 
-    stem = os.path.splitext(os.path.basename(st.session_state.video_path or "lesson"))[0]
+    stem = os.path.splitext(
+        st.session_state.get("source_name")
+        or os.path.basename(st.session_state.video_path or "lesson")
+    )[0].strip()
+    if stem.lower() in ("", "source", "source_from_link", "lesson"):
+        stem = f"{speaker_name.strip() or 'Lesson'} {time.strftime('%Y-%m-%d')}"
     # Underscores are for the URL, where spaces are awkward. A file saved on
     # somebody's own disk should keep the name they gave the recording.
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem)[:60] or "lesson"
-    friendly = re.sub(r'[/\\:]', "-", stem)[:80] or "lesson"
+    friendly = re.sub(r'[/\\:*?"<>|]', "-", stem)[:80].strip(" .") or "lesson"
 
     if not HOSTED:
         # Running on the user's own computer, so the file is already on their
@@ -1612,14 +2021,12 @@ if st.session_state.output_path and os.path.exists(st.session_state.output_path)
             folder = os.path.dirname(os.path.abspath(source)) if source else ""
         if not folder or not os.access(folder, os.W_OK):
             folder = VIDEOS_DIR
-        os.makedirs(folder, exist_ok=True)
-
-        saved = os.path.join(folder, f"{friendly} - captioned.mp4")
-        try:
-            if not os.path.exists(saved) or os.path.getmtime(saved) < os.path.getmtime(path):
-                shutil.copy2(path, saved)
-        except OSError:
-            saved = path
+        saved = save_finished_copy(path, folder, friendly) or \
+            save_finished_copy(path, VIDEOS_DIR, friendly)
+        if not saved:
+            st.error("The video was made but couldn't be saved — the disk may be "
+                     "full. Free some space and press Render again.")
+            st.stop()
 
         st.success(f"Saved as **{os.path.basename(saved)}**")
         st.code(saved, language=None)
@@ -1629,6 +2036,9 @@ if st.session_state.output_path and os.path.exists(st.session_state.output_path)
         elif sys.platform.startswith("win"):
             if st.button("📂  Show it in Explorer", width="stretch"):
                 subprocess.run(["explorer", "/select,", saved], check=False)
+        st.button("➕  Start the next video", width="stretch", on_click=start_next_video,
+                  help="Clears the recording, outline and timings. Your settings, "
+                       "slides and speakers stay as they are.")
         st.stop()
 
     # Served straight from disk, so the size of the lesson does not matter.

@@ -18,3 +18,4 @@ numpy>=1.26,<3
 pandas>=2.0,<4
 requests>=2.32,<3
 proglog>=0.1.10,<1
+pypdfium2>=4.30,<5          # opening/closing slides can be given as a PDF

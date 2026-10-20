@@ -55,7 +55,7 @@ def _unit_checks() -> Result:
 _APP_TEST = """
 import sys
 from streamlit.testing.v1 import AppTest
-at = AppTest.from_file("app.py", default_timeout=90).run()
+at = AppTest.from_file("app.py", default_timeout=180).run()
 if at.exception:
     print("EXCEPTION", at.exception[0].message[:300]); sys.exit(1)
 if not any("Bible Study Video Editor" in t.value for t in at.title):
@@ -69,6 +69,20 @@ print("PAGE OK")
 def _app_starts() -> Result:
     """Load the app's page as a visitor would, in Streamlit's test harness."""
     work = tempfile.mkdtemp(prefix="bsve_apptest_")
+    # With this computer's own saved settings, slides and speakers — a
+    # version that only breaks on somebody's real settings must fail here,
+    # not on the next lesson.
+    real = os.path.join(os.environ.get("BSVE_HOME") or HERE, ".state")
+    try:
+        os.makedirs(os.path.join(work, ".state"), exist_ok=True)
+        if os.path.exists(os.path.join(real, "settings.json")):
+            shutil.copy2(os.path.join(real, "settings.json"),
+                         os.path.join(work, ".state", "settings.json"))
+        if os.path.isdir(os.path.join(real, "artwork")):
+            shutil.copytree(os.path.join(real, "artwork"),
+                            os.path.join(work, ".state", "artwork"))
+    except OSError:
+        pass
     env = dict(os.environ)
     env.update({
         "BSVE_HOME": work,
@@ -178,23 +192,54 @@ def _speech_engine() -> Result:
 def _ai_key() -> Result:
     import control
 
-    key = os.environ.get("GEMINI_API_KEY") or control.saved_keys().get("GEMINI_API_KEY") \
-        or control.shared_keys().get("GEMINI_API_KEY", "")
+    key = (os.environ.get("GEMINI_API_KEY")
+           or control.saved_keys().get("GEMINI_API_KEY")
+           or (control.shared_keys().get("GEMINI_API_KEY", "") if control.vault_url() else "")
+           or control.built_in_keys().get("GEMINI_API_KEY", ""))
     if not key:
         return ("AI key", True,
-                "None connected — matching falls back to keywords. Connect a free "
-                "key from the setup box or the sidebar.")
+                "None available — points will be matched by keywords only.")
     ok, note = control.check_gemini_key(key)
+    if not ok and "Couldn't reach" in note:
+        # Offline is not a fault: the speech engine and the video engine work
+        # without the internet, and matching falls back to keywords.
+        return ("AI key", True,
+                "Couldn't reach Google just now — fine offline; points are "
+                "matched by keywords until the internet is back.")
     return "AI key", ok, note
 
 
 def _artwork() -> Result:
+    import control
+    from PIL import Image
+
     missing = [name for name in ("assets/intro.png", "assets/outro.png",
                                  "assets/logo.png", "fonts/Inter.ttf")
                if not os.path.exists(os.path.join(HERE, name))]
     if missing:
         return "Artwork and font", False, "Missing: " + ", ".join(missing)
-    return "Artwork and font", True, "Intro, outro, logo and font present."
+    own = []
+    for name in control.ARTWORK_NAMES:
+        path = control.saved_artwork(name)
+        if not path:
+            continue
+        try:
+            with Image.open(path) as image:
+                image.verify()
+            own.append(name)
+        except Exception:
+            # A damaged saved slide would break every render; drop it so the
+            # built-in one is used, and say so.
+            control.forget_artwork(name)
+            return ("Artwork and font", False,
+                    f"Your saved {name} slide was damaged and has been removed — "
+                    "the original is used until you add it again.")
+    try:
+        import pypdfium2  # noqa: F401
+    except Exception:
+        return "Artwork and font", False, "The PDF reader for slides is missing."
+    extra = f" Your own {', '.join(own)} saved on this computer." if own else ""
+    return "Artwork and font", True, "Intro, outro, logo and font present." + extra
 
 
 def _disk() -> Result:

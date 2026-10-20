@@ -22,8 +22,13 @@ and the AI matching runs on a free API tier.
 3. Unzip it and follow **Read me first** inside.
 
 The first time it opens, it checks that everything works on your computer
-(about half a minute), then asks for a free Google AI key — the box walks you
-through getting one in a minute, no card needed. That's all the setup there is.
+(about half a minute). There is nothing to set up: no account and no key —
+the group's free AI keys come with it.
+
+Your settings, your opening and closing slides and the people who have
+spoken before are remembered on your computer; change one and it stays
+changed. Finished videos go to Movies (Mac) or Videos (Windows) → *Bible
+Study Video Editor*, each in its own file.
 
 Updates install themselves. Each one is downloaded, checked on your own
 computer, and used only if it passes — and if a new version won't start, the
@@ -560,10 +565,12 @@ ever see *"FFmpeg was not found"*:
 
 **The simple way: send them the release link** —
 https://github.com/zv1pul/bible-study-video-editor/releases/latest. The
-download carries everything (Python, FFmpeg, fonts, artwork), checks itself
-on their computer, walks them through getting their own free AI key, and
-keeps itself up to date. Each person uses their own key and their own free
-daily allowance, so one busy group never uses up another's.
+download carries everything (Python, FFmpeg, fonts, artwork and the group's
+free-tier AI keys), checks itself on their computer, and keeps itself up to
+date. Nobody needs a key of their own; if the shared allowance ever runs
+short, anyone can add their own free key under *More settings → AI keys*,
+and the shared keys can be replaced for every copy at once (see
+[`docs/RELEASING.md`](docs/RELEASING.md)).
 
 Other ways, for the technically minded ([`deploy/DEPLOYING.md`](deploy/DEPLOYING.md)):
 

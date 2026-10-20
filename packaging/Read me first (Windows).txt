@@ -11,19 +11,31 @@ Bible Study Video Editor — Windows
     Click "More info", then "Run anyway". It won't ask again.
 
 3.  The app opens in your web browser. That is normal — it runs entirely
-    on your own computer and nothing is uploaded anywhere.
+    on your own computer and your recordings are never uploaded anywhere.
 
     The first time, it checks that everything works on this computer
-    (about half a minute), then asks for a free Google AI key — the box
-    explains how to get one in a minute, no card needed.
+    (about half a minute). There is nothing to set up — no account and no
+    key; the AI that finds each point is already connected.
+
+Using it:   choose the recording, pick the speaker (people who have spoken
+            before are remembered), paste the outline, press Analyse,
+            glance over the timings, press Render.
 
 Finished videos are saved to:   Videos > Bible Study Video Editor
+            Each video gets its own file — nothing is ever overwritten.
+
+Your settings stay as you left them: discussion time, video quality, and
+your opening and closing slides (replace one in the left-hand panel and it
+is used for every video until you change it again).
 
 Updates install themselves: each one is checked on your computer before
 it is used, and if anything goes wrong the app goes back to the version
 that worked.
 
-To close the app: "Quit the app" at the bottom of the left-hand panel.
+To close the app: just close its browser tab — it stops by itself a few
+minutes later (never in the middle of a render). Or press "Quit the app"
+at the bottom of the left-hand panel. Opening it again while it is still
+running simply brings the page back.
 
 If anything misbehaves, press "Check this computer" in the left-hand panel —
 it says plainly what's wrong.

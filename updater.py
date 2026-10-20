@@ -160,6 +160,9 @@ def stage(force: bool = False) -> Tuple[bool, str]:
     if latest in _read("bad").split():
         return False, f"Version {latest} didn't work on this computer, so it was skipped."
 
+    lock = _take_lock()
+    if not lock:
+        return False, "An update is already being installed — give it a minute."
     work = tempfile.mkdtemp(prefix="bsve_update_", dir=versions_dir())
     try:
         _extract(_download(latest), work)
@@ -172,7 +175,11 @@ def stage(force: bool = False) -> Tuple[bool, str]:
                            "app to get it.")
         ok, why = _passes_checks(work)
         if not ok:
-            _write("bad", (_read("bad") + " " + latest).strip())
+            # One failure might be a busy computer; two is the version.
+            if latest in _read("failed_once").split():
+                _write("bad", (_read("bad") + " " + latest).strip())
+            else:
+                _write("failed_once", (_read("failed_once") + " " + latest).strip())
             return False, f"Version {latest} failed its checks on this computer, so it wasn't installed. ({why})"
 
         target = os.path.join(versions_dir(), latest)
@@ -182,7 +189,7 @@ def stage(force: bool = False) -> Tuple[bool, str]:
         _write("current", latest)
         if previous and previous != latest:
             _write("previous", previous)
-        _tidy(keep={latest, previous})
+        _tidy(keep={latest, previous, control.VERSION})
         return True, f"Version {latest} is installed and checked — it starts next time the app opens."
     except requests.RequestException:
         return False, "Couldn't reach GitHub to fetch the update. Try again later."
@@ -190,6 +197,33 @@ def stage(force: bool = False) -> Tuple[bool, str]:
         return False, f"The update couldn't be installed ({type(exc).__name__}). This copy is unchanged."
     finally:
         shutil.rmtree(work, ignore_errors=True)
+        _release_lock(lock)
+
+
+LOCK_STALE_SECONDS = 30 * 60
+
+
+def _take_lock() -> str:
+    """One update at a time: the launcher's and the Update button's can't overlap."""
+    import time
+
+    path = os.path.join(versions_dir(), ".updating")
+    try:
+        if os.path.exists(path) and os.path.getmtime(path) < time.time() - LOCK_STALE_SECONDS:
+            os.remove(path)                      # left by an update that was killed
+        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(descriptor, str(os.getpid()).encode())
+        os.close(descriptor)
+        return path
+    except OSError:
+        return ""
+
+
+def _release_lock(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 def _tidy(keep: set) -> None:

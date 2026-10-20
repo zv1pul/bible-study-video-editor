@@ -32,12 +32,12 @@ httptools==0.8.0
 httpx==0.28.1
 huggingface_hub==1.28.0
 idna==3.19
-ImageIO==2.37.4
 imageio-ffmpeg==0.6.0
+ImageIO==2.37.4
 itsdangerous==2.2.0
 Jinja2==3.1.6
-jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
+jsonschema==4.26.0
 MarkupSafe==3.0.3
 moviepy==2.2.1
 narwhals==2.25.0
@@ -50,6 +50,7 @@ proglog==0.1.12
 protobuf==7.36.0
 pyarrow==25.0.1
 pydeck==0.9.3
+pypdfium2==4.30.0
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.3
 python-multipart==0.0.32

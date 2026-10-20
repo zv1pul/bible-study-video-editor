@@ -9,6 +9,7 @@ pressing **Publish**, and telling installed copies a new version exists.
 python tests/test_units.py                  # seconds, no API key
 python selfcheck.py                         # the app page, a test render, sound decoding
 python tests/test_updater.py                # updates install, or are refused, or roll back
+python tests/run_long_countdown.py          # a 3-minute countdown renders at the right length
 python tests/build_corpus.py /tmp/corpus && python tests/run_corpus.py /tmp/corpus gemini
 python tests/build_formats.py /tmp/formats && python tests/run_formats.py /tmp/formats
 ```
@@ -18,7 +19,8 @@ row to `docs/LESSONS-LEARNED.md` before fixing it.
 
 ## 2. Raise the version
 
-In `control.py`: `VERSION = "1.2.0"`. Commit and push to `main`.
+In `control.py`: `VERSION = "1.3.0"` (and the two version strings in
+`packaging/Info.plist`). Commit and push to `main`.
 
 GitHub runs **Checks** on a Mac and on Windows (the Actions tab on the
 repository). Wait for it to go green. If it doesn't, nothing reaches anyone.
@@ -26,7 +28,7 @@ repository). Wait for it to go green. If it doesn't, nothing reaches anyone.
 ## 3. Tag it
 
 ```bash
-git tag v1.2.0 && git push origin v1.2.0
+git tag v1.3.0 && git push origin v1.3.0
 ```
 
 The **Release** workflow runs every check again, builds the three downloads —
@@ -40,7 +42,7 @@ the "latest release" link gives people the new version.
 
 ## 5. Tell installed copies — by hand
 
-In `control.json` set `"latest_version": "1.2.0"`, commit and push. Within an
+In `control.json` set `"latest_version": "1.3.0"`, commit and push. Within an
 hour every installed copy fetches that version's code, runs its checks on its
 own computer, and starts using it the next time it opens. If it fails there,
 that copy keeps the version it has.
@@ -61,6 +63,24 @@ pass, regenerate it with `pip freeze` (keep the note at the top).
 - **Say something to everyone**: put a sentence in `control.json`'s
   `"message"` (and `"message_kind": "warning"`); every copy shows it within
   the hour.
-- **Fix it**: release 1.2.1 the same way. Copies move to it on their own.
-- **Stop shared keys being handed out** (if the group vault is in use): set
-  ENABLED to FALSE in the vault's Settings sheet.
+- **Fix it**: release 1.3.1 the same way. Copies move to it on their own.
+
+## The shared AI keys
+
+Every copy uses the group's keys from `control.json` (`"shared_keys"`) — the
+live file wins over the one a copy shipped with, so a change reaches every
+installed copy within the hour, with no new download.
+
+- **Only free-tier keys** (no billing on the Google project, no card on the
+  Groq account). They are masked, not secret: anyone determined can read
+  them out of the app, so the most they must ever be able to cost is a day's
+  free allowance.
+- **To replace them** (a key leaked, or keeps running out):
+
+  ```bash
+  python -c "import control, json; print(json.dumps(control.mask_keys({'GEMINI_API_KEY': 'NEW', 'GROQ_API_KEY': 'NEW'})))"
+  ```
+
+  Paste the output as `"shared_keys"` in `control.json`, commit, push.
+- **To switch them off**: set `"shared_keys": ""`. Copies then match by
+  keywords, or use a key somebody saved under More settings → AI keys.

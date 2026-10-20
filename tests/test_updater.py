@@ -88,7 +88,11 @@ def break_a_check(name, text):
 offer("9.1.0", release("9.1.0", break_a_check))
 staged, message = updater.stage(force=True)
 check("an update failing its checks is refused", not staged and "failed its checks" in message, message)
-check("…and remembered as bad", "9.1.0" in updater._read("bad").split())
+check("…but one failure could be a busy computer, so it may be tried once more",
+      "9.1.0" not in updater._read("bad").split())
+staged, message = updater.stage(force=True)
+check("…failing a second time, it is remembered as bad",
+      not staged and "9.1.0" in updater._read("bad").split())
 check("…and the good one stays staged", updater.staged_version() == newer)
 
 # 3. An update that needs a package this copy doesn't have.

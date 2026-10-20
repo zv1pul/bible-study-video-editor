@@ -127,18 +127,31 @@ def ffmpeg_exe() -> str:
     )
 
 
-def _run(command: List[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        errors="replace",
-    )
+RUN_TIMEOUT = 3 * 3600            # a whole-recording scan, on a slow computer
+PROBE_TIMEOUT = 180               # just reading a file's header
+
+
+def _run(command: List[str], timeout: float = RUN_TIMEOUT) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors="replace",
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            "Reading the recording took far too long. If it is kept in "
+            "OneDrive, Dropbox or iCloud, make sure it is downloaded to this "
+            "computer (not 'online only'), then try again."
+        ) from exc
 
 
 def _probe(media_path: str) -> str:
-    return _run([ffmpeg_exe(), "-hide_banner", "-i", media_path]).stderr or ""
+    return _run([ffmpeg_exe(), "-hide_banner", "-i", media_path],
+                timeout=PROBE_TIMEOUT).stderr or ""
 
 
 _DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d\d):(\d\d(?:\.\d+)?)")
@@ -311,6 +324,16 @@ def _clear_drive_interstitial(session, response):
     )
 
 
+DOWNLOAD_RESUMES = 8
+
+
+class _EmptyResponse:
+    """Stands in for a reply that never arrived, so the resume loop retries."""
+
+    def iter_content(self, chunk_size=1):
+        raise requests.ConnectionError("no response")
+
+
 def download_video(
     url: str,
     destination: str,
@@ -330,7 +353,13 @@ def download_video(
     session = requests.Session()
     session.headers["User-Agent"] = "Mozilla/5.0"
 
-    response = session.get(resolved, stream=True, timeout=60)
+    try:
+        response = session.get(resolved, stream=True, timeout=60)
+    except (requests.ConnectionError, requests.Timeout) as exc:
+        raise RuntimeError(
+            "Couldn't reach that link. Check the internet connection and that "
+            "the link is complete, then press Fetch again."
+        ) from exc
 
     if response.status_code == 404:
         raise RuntimeError(
@@ -380,27 +409,68 @@ def download_video(
     # and three hundred redraws during one download makes it feel stuck.
     step = max(declared // 50, 4 * DOWNLOAD_CHUNK) if declared else 8 * DOWNLOAD_CHUNK
     next_report = step
+    resumes = 0
+    final_url = response.url
 
     with open(destination, "wb") as handle:
-        for block in response.iter_content(chunk_size=DOWNLOAD_CHUNK):
-            if not block:
-                continue
-            handle.write(block)
-            written += len(block)
-            if max_bytes and written > max_bytes:
-                handle.close()
-                os.remove(destination)
+        while True:
+            try:
+                for block in response.iter_content(chunk_size=DOWNLOAD_CHUNK):
+                    if not block:
+                        continue
+                    handle.write(block)
+                    written += len(block)
+                    if max_bytes and written > max_bytes:
+                        handle.close()
+                        os.remove(destination)
+                        raise RuntimeError(
+                            f"That file is larger than the {max_bytes / 1e6:.0f} MB "
+                            "limit for this server."
+                        )
+                    if written >= next_report:
+                        next_report = written + step
+                        if declared:
+                            _report(progress_cb, min(written / declared, 1.0),
+                                    f"Fetching… {written / 1e6:.0f} of {declared / 1e6:.0f} MB")
+                        else:
+                            _report(progress_cb, 0.5, f"Fetching… {written / 1e6:.0f} MB")
+                if not declared or written >= declared:
+                    break
+                problem = "the connection closed early"
+            except (requests.ConnectionError, requests.Timeout,
+                    requests.exceptions.ChunkedEncodingError) as exc:
+                problem = type(exc).__name__
+            # The connection dropped part way. Ask for the rest rather than
+            # starting a multi-gigabyte download over.
+            resumes += 1
+            if resumes > DOWNLOAD_RESUMES:
                 raise RuntimeError(
-                    f"That file is larger than the {max_bytes / 1e6:.0f} MB "
-                    "limit for this server."
+                    f"The download kept dropping ({problem}) after "
+                    f"{written / 1e6:.0f} MB. Check the internet connection "
+                    "and press Fetch again."
                 )
-            if written >= next_report:
-                next_report = written + step
-                if declared:
-                    _report(progress_cb, min(written / declared, 1.0),
-                            f"Fetching… {written / 1e6:.0f} of {declared / 1e6:.0f} MB")
-                else:
-                    _report(progress_cb, 0.5, f"Fetching… {written / 1e6:.0f} MB")
+            _report(progress_cb, min(written / declared, 1.0) if declared else 0.5,
+                    f"The connection dropped — picking up from {written / 1e6:.0f} MB…")
+            time.sleep(min(2 ** resumes, 30))
+            try:
+                response = session.get(final_url, stream=True, timeout=60,
+                                       headers={"Range": f"bytes={written}-"})
+            except (requests.ConnectionError, requests.Timeout):
+                # Nothing came back; loop round and try again after a pause.
+                response = _EmptyResponse()
+                continue
+            if response.status_code == 206:
+                continue
+            if response.status_code == 200:
+                # The server can't resume; start the file again.
+                handle.seek(0)
+                handle.truncate()
+                written = 0
+                continue
+            raise RuntimeError(
+                f"The download stopped and couldn't be resumed ({response.status_code}). "
+                "Press Fetch again."
+            )
 
     if written < 1024:
         os.remove(destination)
@@ -919,13 +989,17 @@ def _post_chunk(chunk: str, api_key: str, language, granularities) -> dict:
         if language:
             form.append(("language", language))
 
-        response = requests.post(
-            GROQ_TRANSCRIBE_URL,
-            headers={"Authorization": f"Bearer {api_key}"},
-            files={"file": (os.path.basename(chunk), handle, "audio/ogg")},
-            data=form,
-            timeout=600,
-        )
+        try:
+            response = requests.post(
+                GROQ_TRANSCRIBE_URL,
+                headers={"Authorization": f"Bearer {api_key}"},
+                files={"file": (os.path.basename(chunk), handle, "audio/ogg")},
+                data=form,
+                timeout=(20, 600),
+            )
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            # A dropped connection is as temporary as a busy server.
+            raise _Transient(f"The connection dropped ({type(exc).__name__}).") from exc
 
     if response.status_code == 200:
         return response.json()
@@ -1035,6 +1109,68 @@ def _transcribe_groq(
         return results
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+TRANSCRIPT_CACHE_DIR = os.path.join(
+    os.environ.get("BSVE_HOME") or os.path.dirname(os.path.abspath(__file__)),
+    ".cache", "transcripts",
+)
+TRANSCRIPTS_KEPT = 30
+
+
+def _transcript_cache_file(media_path: str, engine: str, model_size: str,
+                           language: Optional[str]) -> str:
+    """Where this recording's transcript is kept — "" if it can't be identified."""
+    import hashlib
+
+    try:
+        stat = os.stat(media_path)
+    except OSError:
+        return ""
+    identity = "|".join([
+        os.path.abspath(media_path), str(stat.st_size), str(int(stat.st_mtime)),
+        engine, model_size if engine == "local" else "", language or "",
+    ])
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
+    return os.path.join(TRANSCRIPT_CACHE_DIR, f"{digest}.json")
+
+
+def cached_transcript(media_path: str, engine: str = "local", model_size: str = "base",
+                      language: Optional[str] = "en") -> Optional[List[Segment]]:
+    """The transcript made earlier for this exact recording and setting, if any."""
+    path = _transcript_cache_file(media_path, engine, model_size, language)
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            rows = json.load(handle)
+        return [Segment(r["start"], r["end"], r["text"], r.get("words")) for r in rows]
+    except Exception:
+        return None
+
+
+def remember_transcript(media_path: str, segments: List[Segment], engine: str = "local",
+                        model_size: str = "base", language: Optional[str] = "en") -> None:
+    """Keep a transcript so analysing the same recording again is instant."""
+    path = _transcript_cache_file(media_path, engine, model_size, language)
+    if not path or not segments:
+        return
+    try:
+        os.makedirs(TRANSCRIPT_CACHE_DIR, exist_ok=True)
+        temporary = path + ".tmp"
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump([dict(segment) for segment in segments], handle)
+        os.replace(temporary, path)
+        # Only the most recent few are worth keeping.
+        kept = sorted(
+            (os.path.join(TRANSCRIPT_CACHE_DIR, name) for name in os.listdir(TRANSCRIPT_CACHE_DIR)
+             if name.endswith(".json")),
+            key=os.path.getmtime, reverse=True,
+        )
+        for old in kept[TRANSCRIPTS_KEPT:]:
+            os.remove(old)
+    except Exception:
+        pass
 
 
 def transcribe_video(

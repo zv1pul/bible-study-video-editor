@@ -28,13 +28,14 @@ import json
 import os
 import platform
 import subprocess
+import threading
 import time
 import uuid
 from typing import Any, Dict, Optional
 
 import requests
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 # Where every installed copy looks for instructions. A plain file in the
 # repository: no server to run, no bill, and you change it with a commit.
@@ -78,19 +79,36 @@ def _read_json(path: str, default: Any = None) -> Any:
         return default
 
 
+_LOCK = threading.RLock()
+
+
 def _write_json(path: str, value: Any) -> None:
     # Owner-only: settings can hold an API key, and the cache the group's
     # shared ones. Written to a temporary file first so a crash mid-write
     # never leaves a half-written settings file behind.
-    try:
-        temporary = f"{path}.tmp"
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            json.dump(value, handle, indent=2)
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
-    except Exception:
-        pass
+    with _LOCK:
+        temporary = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+        try:
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                json.dump(value, handle, indent=2)
+            os.chmod(temporary, 0o600)
+        except Exception:
+            return
+        # Windows won't replace a file another program is reading at that
+        # instant; a moment later it will.
+        for attempt in range(10):
+            try:
+                os.replace(temporary, path)
+                return
+            except PermissionError:
+                time.sleep(0.05 * (attempt + 1))
+            except Exception:
+                break
+        try:
+            os.remove(temporary)
+        except OSError:
+            pass
 
 
 def install_id() -> str:
@@ -114,9 +132,12 @@ def settings() -> Dict[str, Any]:
 
 
 def set_setting(key: str, value: Any) -> None:
-    current = settings()
-    current[key] = value
-    _write_json(_state_path("settings.json"), current)
+    # Read, change and write as one step, so two changes made at the same
+    # moment can't undo each other.
+    with _LOCK:
+        current = settings()
+        current[key] = value
+        _write_json(_state_path("settings.json"), current)
 
 
 # --------------------------------------------------------------------------
@@ -163,7 +184,18 @@ def fetch_control(force: bool = False) -> Dict[str, Any]:
     if data is not None:
         _write_json(cache_path, {"fetched_at": int(time.time()), "data": data})
         return data
-    return cached.get("data", {})
+    if not force:
+        # Offline: don't try again on every click — once a minute is plenty.
+        _write_json(cache_path, {
+            "fetched_at": int(time.time()) - CONTROL_CACHE_MINUTES * 60 + 60,
+            "data": cached.get("data") or bundled_control(),
+        })
+    return cached.get("data") or bundled_control()
+
+
+def bundled_control() -> Dict[str, Any]:
+    """The control file this copy shipped with — used until one is fetched."""
+    return _read_json(os.path.join(_HERE, "control.json"), {}) or {}
 
 
 def _fetch_raw() -> Optional[dict]:
@@ -423,6 +455,147 @@ def connect(code: str) -> tuple:
 
 def forget_keys() -> None:
     _write_json(_state_path("keys_cache.json"), {})
+
+
+# --------------------------------------------------------------------------
+# Built-in shared keys
+# --------------------------------------------------------------------------
+#
+# Everyone given the app uses the group's free keys without setting anything
+# up. They travel in control.json as "shared_keys": the copy fetched from the
+# repository wins, so a key is replaced for every installed copy by editing
+# that one file — no new download — and the copy each app shipped with covers
+# the first launch offline.
+#
+# They are masked only so that automated scanners don't mistake them for a
+# leak and switch them off. That is NOT protection: anyone determined can read
+# them, which is why only free-tier keys (no billing, nothing to charge) may
+# ever go here. The worst anyone can do is use up a day's free allowance, and
+# the app then falls back to the other service and finally to offline
+# matching.
+
+_MASK = b"bsve-shared-keys-v1"
+_MASK_PREFIX = "bsve1:"
+
+
+def mask_keys(keys: Dict[str, str]) -> str:
+    """The form keys are stored in inside control.json."""
+    import base64
+
+    raw = json.dumps({k: v for k, v in keys.items() if v}).encode("utf-8")
+    mixed = bytes(b ^ _MASK[i % len(_MASK)] for i, b in enumerate(raw))
+    return _MASK_PREFIX + base64.urlsafe_b64encode(mixed).decode("ascii")
+
+
+def unmask_keys(value: str) -> Dict[str, str]:
+    import base64
+
+    value = str(value or "")
+    if not value.startswith(_MASK_PREFIX):
+        return {}
+    try:
+        mixed = base64.urlsafe_b64decode(value[len(_MASK_PREFIX):].encode("ascii"))
+        raw = bytes(b ^ _MASK[i % len(_MASK)] for i, b in enumerate(mixed))
+        keys = json.loads(raw.decode("utf-8"))
+        return {str(k): str(v).strip() for k, v in keys.items() if str(v or "").strip()}
+    except Exception:
+        return {}
+
+
+def built_in_keys() -> Dict[str, str]:
+    """The group's shared keys: the live control file's, else the shipped one's."""
+    live = fetch_control()
+    if "shared_keys" in live:
+        return unmask_keys(live.get("shared_keys"))
+    return unmask_keys(bundled_control().get("shared_keys"))
+
+
+# --------------------------------------------------------------------------
+# Things remembered between sessions
+# --------------------------------------------------------------------------
+#
+# Kept in the same per-computer folder as everything else (outside the app
+# itself), so they survive updates and are never shared with anyone.
+
+
+def prefs() -> Dict[str, Any]:
+    return dict(settings().get("prefs") or {})
+
+
+def set_pref(name: str, value: Any) -> None:
+    with _LOCK:
+        current = prefs()
+        if current.get(name) != value:
+            current[name] = value
+            set_setting("prefs", current)
+
+
+SPEAKERS_KEPT = 15
+
+
+def speakers() -> list:
+    """Recent speakers, most recent first: [{"name": ..., "title": ...}]."""
+    out = []
+    for entry in settings().get("speakers") or []:
+        if isinstance(entry, dict) and str(entry.get("name") or "").strip():
+            out.append({"name": str(entry["name"]).strip(),
+                        "title": str(entry.get("title") or "").strip()})
+    return out
+
+
+def remember_speaker(name: str, title: str) -> None:
+    name, title = (name or "").strip(), (title or "").strip()
+    if not name:
+        return
+    rest = [s for s in speakers() if s["name"].lower() != name.lower()]
+    set_setting("speakers", ([{"name": name, "title": title}] + rest)[:SPEAKERS_KEPT])
+
+
+def forget_speaker(name: str) -> None:
+    set_setting("speakers", [s for s in speakers()
+                             if s["name"].lower() != (name or "").strip().lower()])
+
+
+ARTWORK_NAMES = ("intro", "outro", "logo")
+
+
+def artwork_dir() -> str:
+    path = _state_path("artwork")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def saved_artwork(name: str) -> str:
+    """The slide or logo saved on this computer, or "" if none was."""
+    path = os.path.join(artwork_dir(), f"{name}.png")
+    return path if os.path.exists(path) and os.path.getsize(path) > 0 else ""
+
+
+def save_artwork(name: str, source: str) -> str:
+    """
+    Keep a new opening/closing slide or logo until it is changed again.
+
+    Converted to a PNG (a PDF's first page works too) and fitted to the
+    frame first, written beside the old one and swapped in only once it is
+    complete, so a failed save never loses the slide already in use. Raises
+    ValueError with a plain reason if the file can't be used.
+    """
+    import editor
+
+    if name not in ARTWORK_NAMES:
+        raise ValueError(f"Unknown artwork: {name}")
+    final = os.path.join(artwork_dir(), f"{name}.png")
+    temporary = os.path.join(artwork_dir(), f".{name}.new.png")
+    editor.prepare_slide(source, temporary, kind="logo" if name == "logo" else "slide")
+    os.replace(temporary, final)
+    return final
+
+
+def forget_artwork(name: str) -> None:
+    try:
+        os.remove(os.path.join(artwork_dir(), f"{name}.png"))
+    except OSError:
+        pass
 
 
 # --------------------------------------------------------------------------

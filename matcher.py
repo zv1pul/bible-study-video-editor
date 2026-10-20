@@ -1184,11 +1184,12 @@ def _call_groq(prompt: str, api_key: str, model: str, timeout: int = 240) -> str
     raise ProviderError(f"{model}: {last or 'no usable response format'}", 400, False)
 
 
-def _call_once(prompt: str, provider: str, api_key: str, model: str) -> str:
+def _call_once(prompt: str, provider: str, api_key: str, model: str,
+               timeout: int = 240) -> str:
     if provider == "gemini":
-        return _call_gemini(prompt, api_key, model)
+        return _call_gemini(prompt, api_key, model, timeout=timeout)
     if provider == "groq":
-        return _call_groq(prompt, api_key, model)
+        return _call_groq(prompt, api_key, model, timeout=timeout)
     raise ProviderError(f"Unknown provider '{provider}'.")
 
 
@@ -1207,6 +1208,10 @@ CACHE_DIR = os.path.join(
 )
 CACHE_MAX_AGE_DAYS = 30
 DAILY_FREE_REQUESTS = 20
+
+# The most the AI search may take, across every model, retry and fallback.
+AI_TIME_BUDGET = 300.0
+AI_BACKUP_SHARE = 0.3          # of that, kept back for the other service
 
 
 def _cache_path(name: str) -> str:
@@ -1378,6 +1383,7 @@ def call_with_failover(
     other_keys: Optional[Dict[str, str]] = None,
     alt_prompts: Optional[Dict[str, str]] = None,
     use_cache: bool = True,
+    deadline: Optional[float] = None,
     _chain_override: Optional[List[str]] = None,
     _discovered_round: bool = False,
 ) -> tuple:
@@ -1390,6 +1396,14 @@ def call_with_failover(
     when every model in the chain has been exhausted.
     """
     log: List[str] = []
+    # One overall time limit for the whole search, however many models and
+    # retries it goes through: past it, the outline is matched offline
+    # instead of leaving "Asking the AI…" on screen for an hour.
+    if deadline is None:
+        deadline = time.time() + AI_TIME_BUDGET
+    # Keep a share of the time back for the other service, if there is one.
+    has_backup = any(k and o != provider for o, k in (other_keys or {}).items())
+    own_deadline = deadline - (AI_BACKUP_SHARE * AI_TIME_BUDGET if has_backup else 0)
     discovered_round = _discovered_round
     chain = _chain_override or resolve_chain(provider, model)
     if not chain:
@@ -1412,10 +1426,22 @@ def call_with_failover(
             return cached[0], cached[1], log
 
     last: Optional[ProviderError] = None
+    bad_key = False
+    out_of_time = False
     for model_name in chain:
+        if bad_key or out_of_time:
+            break
         for attempt in range(1, attempts_per_model + 1):
+            remaining = own_deadline - time.time()
+            if remaining < 10:
+                note(f"{provider} is too slow today — moving on.")
+                out_of_time = True
+                last = last or ProviderError("The AI services were too slow to answer.",
+                                             408, False)
+                break
             try:
-                text = _call_once(prompt, provider, api_key, model_name)
+                text = _call_once(prompt, provider, api_key, model_name,
+                                  timeout=int(min(240, remaining)))
                 record_call(provider, model_name)
                 if use_cache:
                     cache_put(prompt, provider, text, model_name, model)
@@ -1425,8 +1451,12 @@ def call_with_failover(
             except ProviderError as exc:
                 last = exc
                 if exc.is_auth_failure:
-                    note("The API key was rejected — check it in the sidebar.")
-                    raise
+                    # A bad key won't work on the next model either — but the
+                    # other service has a key of its own, so try that before
+                    # giving up.
+                    note(f"The {provider} key was turned down.")
+                    bad_key = True
+                    break
                 if exc.exhausted_for_today:
                     note(f"{model_name}: today's free allowance is used up.")
                     break  # no amount of waiting brings a daily quota back
@@ -1435,14 +1465,15 @@ def call_with_failover(
                     break
                 # The provider usually says how long to wait; trust it over a
                 # guess, but never stall the user for more than 15 seconds.
-                delay = min(exc.retry_after or 2 ** (attempt - 1) * 1.5, 15.0)
+                delay = min(exc.retry_after or 2 ** (attempt - 1) * 1.5, 15.0,
+                            max(own_deadline - time.time() - 10, 0))
                 note(f"{model_name} attempt {attempt} failed ({exc.status}); "
                      f"retrying in {delay:.0f}s.")
                 time.sleep(delay)
 
     # Everything we knew about is gone or unavailable. Ask the provider what
     # it has now and try those before giving up.
-    if not discovered_round:
+    if not discovered_round and not bad_key and not out_of_time:
         live = [m for m in discover_models(provider, api_key) if m not in chain]
         if live:
             note(
@@ -1452,7 +1483,7 @@ def call_with_failover(
             try:
                 return call_with_failover(
                     prompt, provider, api_key, model,
-                    attempts_per_model=1, on_event=on_event,
+                    attempts_per_model=1, on_event=on_event, deadline=deadline,
                     _chain_override=live, _discovered_round=True,
                 )
             except ProviderError as exc:
@@ -1464,17 +1495,21 @@ def call_with_failover(
     for other, other_key in (other_keys or {}).items():
         if other == provider or not other_key:
             continue
+        if deadline - time.time() < 20:
+            break
         note(f"{provider} is exhausted — switching to {PROVIDERS.get(other, {}).get('label', other)}.")
         try:
             return call_with_failover(
                 (alt_prompts or {}).get(other, prompt),
                 other, other_key, "auto",
                 attempts_per_model=attempts_per_model, on_event=on_event,
-                use_cache=use_cache,
+                use_cache=use_cache, deadline=deadline,
             )
         except ProviderError as exc:
             last = exc
 
+    if bad_key and last is not None and last.is_auth_failure:
+        raise last
     raise ProviderError(
         f"Every model was unavailable. Last error: {last}",
         getattr(last, "status", 0),

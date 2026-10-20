@@ -11,8 +11,14 @@ bad update can never break the thing that starts the app:
      as bad, go back to the one before, and start that instead.
   3. Open the browser, then quietly fetch, check and stage the next update
      for the next time the app opens.
+
+Opening the app while it is already running just opens the browser on it
+again — never a second copy. The launcher then steps aside: the app runs on
+its own and stops itself a few minutes after its browser tab is closed
+(unless it is in the middle of a job), so nothing is left running unseen.
 """
 
+import json
 import os
 import socket
 import subprocess
@@ -34,6 +40,7 @@ BUNDLED = os.path.join(RES, "app")
 HOME = os.environ.get("BSVE_HOME") or os.path.join(os.path.expanduser("~"), ".bible-study-video-editor")
 VERSIONS = os.path.join(HOME, "app")
 START_TIMEOUT = 90
+RUNNING = os.path.join(HOME, "running.json")
 
 
 def _read(name):
@@ -84,13 +91,16 @@ def start(folder):
     """(process, port) once the app answers, or (process, None) if it doesn't."""
     port = free_port()
     log = open(os.path.join(HOME, "last-run.log"), "w", encoding="utf-8")
-    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    flags = (getattr(subprocess, "CREATE_NO_WINDOW", 0)
+             | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
     process = subprocess.Popen(
         [PYTHON, "-m", "streamlit", "run", "app.py",
          "--server.port", str(port), "--server.address", "127.0.0.1",
          "--server.headless", "true", "--browser.gatherUsageStats", "false"],
         cwd=folder, stdout=log, stderr=subprocess.STDOUT, env=environment(),
         creationflags=flags,
+        # Its own session, so it carries on after the launcher has finished.
+        start_new_session=not sys.platform.startswith("win"),
     )
     deadline = time.time() + START_TIMEOUT
     while time.time() < deadline:
@@ -132,43 +142,41 @@ def start_with_fallback():
     return process, port, folder, version
 
 
-def stop_with(process):
-    """When the launcher is told to stop, stop the app's server too."""
-    import atexit
-    import signal
-
-    def finish(*_args):
-        try:
-            process.terminate()
-            process.wait(timeout=5)
-        except Exception:
-            try:
-                process.kill()
-            except Exception:
-                pass
-        os._exit(0)
-
-    atexit.register(lambda: process.poll() is None and process.terminate())
-    for name in ("SIGTERM", "SIGINT", "SIGHUP"):
-        if hasattr(signal, name):
-            try:
-                signal.signal(getattr(signal, name), finish)
-            except Exception:
-                pass
+def already_running():
+    """The port of a copy that is running and answering, or None."""
+    try:
+        with open(RUNNING, encoding="utf-8") as handle:
+            port = int(json.load(handle)["port"])
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/_stcore/health", timeout=3)
+        return port
+    except Exception:
+        return None
 
 
 def main():
     os.makedirs(HOME, exist_ok=True)
-    process, port, folder, version = start_with_fallback()
-    stop_with(process)
 
+    port = already_running()
+    if port:
+        webbrowser.open(f"http://127.0.0.1:{port}")
+        return
+
+    process, port, folder, version = start_with_fallback()
     if port is None:
-        process.kill()
+        try:
+            process.kill()
+        except Exception:
+            pass
         complain("The app couldn't start. Restart your computer and try again; if it "
                  "still won't open, send the file last-run.log from " + HOME +
                  " to whoever gave you the app.")
         sys.exit(1)
 
+    try:
+        with open(RUNNING, "w", encoding="utf-8") as handle:
+            json.dump({"port": port, "pid": process.pid, "version": version}, handle)
+    except OSError:
+        pass
     webbrowser.open(f"http://127.0.0.1:{port}")
 
     # Next time's update, fetched and checked in the background.
@@ -177,11 +185,11 @@ def main():
         subprocess.Popen([PYTHON, os.path.join(folder, "updater.py"), "--stage"],
                          cwd=folder, env=environment(), stdout=quiet,
                          stderr=subprocess.STDOUT,
-                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                         creationflags=(getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                                        | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)),
+                         start_new_session=not sys.platform.startswith("win"))
     except Exception:
         pass
-
-    process.wait()
 
 
 if __name__ == "__main__":

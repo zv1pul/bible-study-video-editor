@@ -744,6 +744,39 @@ class Cue:
     kind: str = ""
 
 
+def parse_seconds(text, low: float = 1.0, high: float = 600.0) -> float:
+    """
+    A length of time as somebody would type it, in seconds — or 0 if unclear.
+
+        "45"  "45s"  "45 sec"     -> 45
+        "2:30"                   -> 150
+        "2 min"  "2m"  "1.5 min" -> 120, 120, 90
+
+    Anything outside low..high is treated as a typo and ignored.
+    """
+    value = str(text or "").strip().lower()
+    if not value:
+        return 0.0
+    try:
+        if ":" in value:
+            minutes, seconds = value.split(":", 1)
+            total = int(minutes or 0) * 60 + float(seconds or 0)
+        else:
+            match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([a-z]*)", value)
+            if not match:
+                return 0.0
+            number, unit = float(match.group(1)), match.group(2)
+            if unit in ("", "s", "sec", "secs", "second", "seconds"):
+                total = number
+            elif unit in ("m", "min", "mins", "minute", "minutes"):
+                total = number * 60
+            else:
+                return 0.0
+    except ValueError:
+        return 0.0
+    return total if low <= total <= high else 0.0
+
+
 def schedule_cues(
     cues: Sequence[Cue],
     video_duration: float,
@@ -886,6 +919,91 @@ def lower_third_timing(elements, fallback_start: float = LOWER_THIRD_START,
 # Intro and outro bookends
 # --------------------------------------------------------------------------
 
+SLIDE_SIZE = (3840, 2160)            # 4K 16:9 — scaled down cleanly for any video
+SLIDE_TYPES = ["png", "jpg", "jpeg", "webp", "pdf"]
+
+
+def _open_artwork(source: str) -> Image.Image:
+    """An image file, or the first page of a PDF, as an RGB picture."""
+    with open(source, "rb") as handle:
+        is_pdf = handle.read(5) == b"%PDF-"
+    if is_pdf:
+        import pypdfium2
+
+        document = pypdfium2.PdfDocument(source)
+        try:
+            page = document[0]
+            width, height = page.get_size()
+            # Render big enough that the 4K slide is never upscaled.
+            scale = max(SLIDE_SIZE[0] / max(width, 1), SLIDE_SIZE[1] / max(height, 1), 1.0)
+            image = page.render(scale=scale).to_pil()
+        finally:
+            document.close()
+        return image.convert("RGB")
+    image = Image.open(source)
+    image.load()
+    if image.mode in ("RGBA", "LA", "P"):
+        background = Image.new("RGB", image.size, (0, 0, 0))
+        rgba = image.convert("RGBA")
+        background.paste(rgba, mask=rgba.split()[-1])
+        return background
+    return image.convert("RGB")
+
+
+def prepare_slide(source: str, target: str, kind: str = "slide") -> str:
+    """
+    Turn whatever artwork somebody has into a slide the renderer can use.
+
+    Accepts a PNG, JPEG or WebP, or a PDF (its first page). An opening or
+    closing slide is fitted onto a 16:9 frame: one that is already
+    widescreen fills it exactly; any other shape — a portrait poster, a
+    square — sits whole in the middle over a soft, darkened copy of itself
+    instead of black bars. A logo keeps its own shape and transparency.
+
+    Raises ValueError with a plain-English reason if the file can't be used.
+    """
+    try:
+        if kind == "logo":
+            image = Image.open(source)
+            image.load()
+            image = image.convert("RGBA")
+            image.thumbnail((CARD_LOGO_BOX * 4, CARD_LOGO_BOX * 4), Image.LANCZOS)
+            image.save(target, "PNG")
+            return target
+        image = _open_artwork(source)
+    except Exception as exc:
+        raise ValueError(
+            "That file couldn't be opened as a picture or PDF. Save it as a "
+            "PNG or JPEG and try again."
+        ) from exc
+    if image.width < 64 or image.height < 64:
+        raise ValueError("That picture is too small to use as a slide.")
+
+    width, height = SLIDE_SIZE
+    ratio = image.width / image.height
+    if abs(ratio - width / height) < 0.02:
+        slide = image.resize(SLIDE_SIZE, Image.LANCZOS)
+    else:
+        from PIL import ImageEnhance, ImageFilter
+
+        cover = max(width / image.width, height / image.height)
+        backdrop = image.resize(
+            (int(image.width * cover) + 1, int(image.height * cover) + 1), Image.LANCZOS
+        )
+        left = (backdrop.width - width) // 2
+        top = (backdrop.height - height) // 2
+        backdrop = backdrop.crop((left, top, left + width, top + height))
+        backdrop = backdrop.filter(ImageFilter.GaussianBlur(60))
+        backdrop = ImageEnhance.Brightness(backdrop).enhance(0.45)
+        fit = min(width / image.width, height / image.height)
+        front = image.resize(
+            (max(int(image.width * fit), 1), max(int(image.height * fit), 1)), Image.LANCZOS
+        )
+        backdrop.paste(front, ((width - front.width) // 2, (height - front.height) // 2))
+        slide = backdrop
+    slide.save(target, "PNG", optimize=True)
+    return target
+
 
 def add_bookends(
     video_clip,
@@ -992,9 +1110,7 @@ def _concat_bookends(
         order = [item for item in order if item]
 
         listing = os.path.join(workdir, "pieces.txt")
-        with open(listing, "w") as handle:
-            for item in order:
-                handle.write(f"file '{os.path.abspath(item)}'\n")
+        _write_join_list(listing, order)
 
         joined = subprocess.run(
             [ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error",
@@ -1030,6 +1146,21 @@ def _concat_bookends(
 # --------------------------------------------------------------------------
 # Rendering helpers
 # --------------------------------------------------------------------------
+
+
+def _write_join_list(listing: str, paths) -> None:
+    """
+    The list FFmpeg reads to join pieces end to end.
+
+    Always UTF-8, which is what FFmpeg expects — Windows would otherwise
+    write it in its old code page and an accented user name (in the temp
+    folder's path) breaks the join — and with quotes escaped, so a name like
+    O'Brien can't end the path early.
+    """
+    with open(listing, "w", encoding="utf-8", newline="\n") as handle:
+        for item in paths:
+            escaped = os.path.abspath(item).replace("'", "'\\''")
+            handle.write(f"file '{escaped}'\n")
 
 
 def _progress_logger(progress_cb):
@@ -1267,20 +1398,33 @@ def _render_with_ffmpeg(
     # must share identical audio parameters, so bookends force a re-encode.
     attempts = [encoded_audio] if force_audio_encode else [["-c:a", "copy"], encoded_audio]
 
+    import tempfile as _tempfile
+
     for audio_args in attempts:
-        process = subprocess.Popen(
-            build(audio_args), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, errors="replace",
-        )
-        for line in process.stdout:
-            match = time_re.search(line)
-            if match and progress_cb and duration:
-                done = int(match.group(1)) / 1_000_000 / duration
+        # FFmpeg's complaints go to a file, never a pipe nobody reads: a
+        # recording with glitches can produce hundreds of kilobytes of them,
+        # and a full pipe makes FFmpeg stop and wait — forever.
+        with _tempfile.TemporaryFile() as log:
+            process = subprocess.Popen(
+                build(audio_args), stdout=subprocess.PIPE, stderr=log,
+                text=True, errors="replace",
+            )
+            for line in process.stdout:
+                match = time_re.search(line)
+                if match and progress_cb and duration:
+                    done = int(match.group(1)) / 1_000_000 / duration
+                    try:
+                        progress_cb(min(done, 1.0), "Rendering video…")
+                    except Exception:
+                        pass
+            process.wait()
+            if process.returncode != 0:
                 try:
-                    progress_cb(min(done, 1.0), "Rendering video…")
+                    log.seek(0, os.SEEK_END)
+                    log.seek(max(log.tell() - 4000, 0))
+                    _last_error["render"] = log.read().decode("utf-8", "replace")[-1200:]
                 except Exception:
                     pass
-        process.wait()
         if process.returncode == 0 and os.path.exists(output_path):
             return True
 
@@ -1377,24 +1521,34 @@ def _render_pause_block(
               "-f", "lavfi", "-t", f"{seconds:.3f}",
               "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]
 
-    # One overlay per countdown second, each enabled only for its own second.
+    # The countdown is one stream: a list of its second-by-second frames,
+    # each held for its own length. One input, however long the discussion —
+    # a separate input per second made a three-minute countdown longer than
+    # Windows allows a command to be, and the render failed.
+    steps = timer_steps(seconds)
     filters: List[str] = [f"[0:v]fps={fps},format=rgba[base]"]
-    last = "base"
-    for index, (offset, remaining, length) in enumerate(timer_steps(seconds), start=2):
-        frame = make_timer_image(width, height, remaining,
-                                 on_card=(card_style == "fullscreen"),
-                                 total=seconds)
-        frame_path = os.path.join(workdir, f"pause_timer_{index:04d}.png")
-        _Image.fromarray(frame).save(frame_path)
-        inputs += ["-loop", "1", "-t", f"{length:.3f}", "-i", frame_path]
-        x = int((width - frame.shape[1]) / 2)
-        y = int(height * TIMER_Y)
-        filters.append(f"[{index}:v]format=rgba,setpts=PTS+{offset:.3f}/TB[t{index}]")
-        filters.append(
-            f"[{last}][t{index}]overlay=x={x}:y={y}"
-            f":enable='between(t,{offset:.3f},{offset + length:.3f})'[v{index}]"
-        )
-        last = f"v{index}"
+    if steps:
+        lines = ["ffconcat version 1.0"]
+        x = y = 0
+        for index, (offset, remaining, length) in enumerate(steps):
+            frame = make_timer_image(width, height, remaining,
+                                     on_card=(card_style == "fullscreen"),
+                                     total=seconds)
+            name = f"pause_timer_{index:04d}.png"
+            _Image.fromarray(frame).save(os.path.join(workdir, name))
+            lines += [f"file '{name}'", f"duration {length:.3f}"]
+            x = int((width - frame.shape[1]) / 2)
+            y = int(height * TIMER_Y)
+        lines.append(f"file '{name}'")          # the list format needs the last one twice
+        listing = os.path.join(workdir, "pause_timer.ffconcat")
+        with open(listing, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(lines) + "\n")
+        inputs += ["-f", "concat", "-safe", "0", "-i", listing]
+        filters.append(f"[2:v]fps={fps},format=rgba,setpts=PTS-STARTPTS[timer]")
+        filters.append(f"[base][timer]overlay=x={x}:y={y}:eof_action=repeat[withtimer]")
+        last = "withtimer"
+    else:
+        last = "base"
     filters.append(f"[{last}]format=yuv420p[vout]")
 
     result = subprocess.run([
@@ -1502,9 +1656,7 @@ def _concat_pieces(paths: Sequence[str], output_path: str, preset: str,
         return True
 
     listing = os.path.join(_tempfile.mkdtemp(prefix="bsve_join_"), "pieces.txt")
-    with open(listing, "w") as handle:
-        for item in paths:
-            handle.write(f"file '{os.path.abspath(item)}'\n")
+    _write_join_list(listing, paths)
     expected = sum(video_info(item).get("duration", 0.0) for item in paths)
     joined = subprocess.run(
         [ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error",

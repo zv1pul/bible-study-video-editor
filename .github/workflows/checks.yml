@@ -28,6 +28,8 @@ jobs:
         run: python selfcheck.py --update-gate
       - name: Updates — good ones install, bad ones are refused or rolled back
         run: python tests/test_updater.py
+      - name: A three-minute countdown, in a folder with an awkward name
+        run: python tests/run_long_countdown.py
       - name: Test lessons — transcribe, match, verify, lay out and render eight lessons
         run: |
           python tests/build_corpus.py "$RUNNER_TEMP/corpus"
@@ -53,6 +55,11 @@ jobs:
         run: python selfcheck.py --update-gate
       - name: Updates
         run: python tests/test_updater.py
+      - name: A three-minute countdown (once longer than Windows allows a command to be)
+        run: python tests/run_long_countdown.py
+      - name: The "Choose the video" window can be built
+        run: |
+          python -c "import ast,subprocess,sys; src=open('app.py',encoding='utf-8').read(); tree=ast.parse(src); ns={'VIDEO_EXTENSIONS':('mp4','mov')}; fn=[n for n in tree.body if getattr(n,'name','')=='windows_picker_command'][0]; exec(compile(ast.Module([fn],[]),'app.py','exec'),ns); out=subprocess.run(ns['windows_picker_command'](show=False),capture_output=True,text=True); print(out.stdout, out.stderr); sys.exit(0 if 'PICKER READY' in out.stdout else 1)"
       - name: Source formats
         run: |
           python tests/build_formats.py "$env:RUNNER_TEMP\formats"
