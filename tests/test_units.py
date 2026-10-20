@@ -421,6 +421,34 @@ blocks = [p for p in editor.plan_pieces(cues, github_duration) if p["kind"] == "
 timed = [e for e in shown if e.type == "application" and e.has_timer]
 check("every question shown gets its countdown in the plan", len(blocks), len(timed))
 
+# Lesson 7 (Eric Roachford, Romans 3:21-26): "three minutes to discuss this
+# amongst each other" — a group member then shared clearly and fluently near
+# the camera, and the cut ended on them instead of on Eric calling the room
+# back. An announced breakout now lasts until the teacher's call back.
+breakout = [
+    Segment(0.0, 6.0, "So three minutes to discuss this amongst each other brothers.",
+            words("So three minutes to discuss this amongst each other brothers.", 0.0)),
+    Segment(9.0, 12.0, "Yeah, yeah.", words("Yeah, yeah.", 9.0, confidence=0.3)),
+]
+member = ("I felt like I was unworthy of her forgiveness you know but let alone a God "
+          "who is infinitely righteous so yes I struggle that was my struggle")
+breakout.append(Segment(40.0, 60.0, member, words(member, 40.0, confidence=0.92)))
+aside = "Everybody has a different way of seeing it you know"
+breakout.append(Segment(80.0, 84.0, aside, words(aside, 80.0, confidence=0.9)))
+back = ("All right, brothers. So we're going to move on to the second division "
+        "where Paul tells us how God justifies the ungodly by faith alone")
+breakout.append(Segment(190.0, 205.0, back, words(back, 190.0)))
+cut = matcher.find_dead_time(breakout, 6.0, 210.0)
+check("an announced group discussion is cut until the teacher calls the room back",
+      cut and round(cut[1]), 190)
+quiet = [breakout[0]._replace(text="Where have you seen this in your own life?")
+         if hasattr(breakout[0], "_replace") else
+         Segment(0.0, 6.0, "Where have you seen this in your own life?",
+                 words("Where have you seen this in your own life?", 0.0))] + breakout[1:]
+cut = matcher.find_dead_time(quiet, 6.0, 210.0)
+check_that("without an announced discussion, clear speech still ends the cut",
+           cut is None or cut[1] < 60.5, cut)
+
 check("countdown lengths are read the way people type them",
       [editor.parse_seconds(t) for t in ("45", "45s", "2:30", "2 min", "1.5 min", "", "abc", "0", "99:00")],
       [45.0, 45.0, 150.0, 120.0, 90.0, 0.0, 0.0, 0.0, 0.0])

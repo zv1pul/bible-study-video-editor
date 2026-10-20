@@ -311,6 +311,8 @@ def _clear_drive_interstitial(session, response):
     video. The form carries a one-time token, so it has to be read and
     submitted before the file is served.
     """
+    from urllib.parse import urljoin, urlparse
+
     body = response.text
     action = _DRIVE_FORM_RE.search(body)
     if not action:
@@ -318,10 +320,12 @@ def _clear_drive_interstitial(session, response):
     fields = dict(_DRIVE_HIDDEN_RE.findall(body))
     if not fields:
         return None
-    return session.get(
-        action.group(1).replace("&amp;", "&"),
-        params=fields, stream=True, timeout=60,
-    )
+    target = urljoin(response.url, action.group(1).replace("&amp;", "&"))
+    # Only Drive's own confirmation form — never a sign-in form or anything else.
+    if not (urlparse(target).hostname or "").endswith(("drive.google.com",
+                                                        "drive.usercontent.google.com")):
+        return None
+    return session.get(target, params=fields, stream=True, timeout=60)
 
 
 DOWNLOAD_RESUMES = 8
@@ -379,6 +383,15 @@ def download_video(
             "link is right and the file is shared with anyone who has it."
         )
 
+    from urllib.parse import urlparse
+
+    if (urlparse(response.url).hostname or "").startswith("accounts.google."):
+        # Drive sent us to its sign-in page: the file isn't shared publicly.
+        raise RuntimeError(
+            "That file isn't shared publicly, so the app can't reach it. Open it "
+            "in Google Drive, press Share, and under General access choose "
+            "'Anyone with the link', then press Fetch again."
+        )
     if "text/html" in response.headers.get("content-type", ""):
         _report(progress_cb, 0.02, "Confirming the download with Google Drive…")
         confirmed = _clear_drive_interstitial(session, response)

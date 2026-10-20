@@ -1518,7 +1518,8 @@ if st.session_state.verdicts:
     # Retries and model hand-offs are the app doing its job; only what changes
     # how far the timings can be trusted is worth a warning.
     _technical = re.compile(
-        r"attempt \d|answered by|retrying|reused the saved answer|failed \(|"
+        r"attempt \d|answered by|retrying|reused the saved answer|failed \(|failed:|"
+        r"high demand|no longer available|"
         r"^attempt|switching to|too slow today|turned down|matched by |"
         r"none of the known models|allowance is used up",
         re.IGNORECASE,
@@ -1721,7 +1722,9 @@ if st.session_state.verdicts:
     if render_engine != "auto":
         rate = 1.0
     else:
-        rate = 9.0 if HOSTED else 12.0
+        # Learned from this computer's own last render where there is one:
+        # a 1080p phone recording renders far slower than a small test file.
+        rate = float(control.prefs().get("render_rate") or (9.0 if HOSTED else 4.0))
     removed = sum(c.cut_end - c.cut_start for c in cues if c.cut_end > c.cut_start)
     inserted = sum(c.timer_duration for c in cues if c.has_timer)
     bookends = (float(bookend_seconds) if intro_path else 0.0) + \
@@ -1840,6 +1843,9 @@ if st.session_state.verdicts:
                 )
                 st.session_state.output_path = output_path
                 st.session_state.render_seconds = time.time() - started
+                if final_length > 120 and st.session_state.render_seconds > 5:
+                    control.set_pref("render_rate", round(
+                        final_length / st.session_state.render_seconds, 2))
                 control.report_async(
                     "rendered",
                     lesson_minutes=round(duration / 60, 1),
@@ -2014,14 +2020,9 @@ if st.session_state.output_path and os.path.exists(st.session_state.output_path)
         # disk. Downloading it through the browser would only make a second
         # copy in Downloads and leave them hunting for it. Save it somewhere
         # obvious and offer to open the folder instead.
-        if IS_PACKAGED:
-            folder = PACKAGED_OUTPUT_DIR
-        else:
-            source = st.session_state.video_path or ""
-            folder = os.path.dirname(os.path.abspath(source)) if source else ""
-        if not folder or not os.access(folder, os.W_OK):
-            folder = VIDEOS_DIR
-        saved = save_finished_copy(path, folder, friendly) or \
+        # Always the same, findable place — never "next to the recording",
+        # which for a fetched link is a temporary folder that is cleared.
+        saved = save_finished_copy(path, PACKAGED_OUTPUT_DIR, friendly) or \
             save_finished_copy(path, VIDEOS_DIR, friendly)
         if not saved:
             st.error("The video was made but couldn't be saved — the disk may be "

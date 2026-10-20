@@ -83,6 +83,20 @@ python tests/run_formats.py   /tmp/formats  # 6 awkward source formats
 | A second AI answer placed question 1 correctly but gave it a 58-second span | The countdown drifted 40 seconds into the teaching | A question's or principle's end comes from its **last reading**, not the model's span |
 | Question read twice back to back | The second reading was filtered out as a duplicate of the first (off by one) and a window shifted into the next sentence was used | Readings exactly one question-length apart are both kept, and each match ends at its last matching word |
 
+## Lesson 7 — Romans 3:21–26 (Eric Roachford, live room, group breakouts)
+
+A 31-minute live recording: after each question Eric said "three minutes to
+discuss this amongst each other" and the room broke into small groups — with
+one group right beside the camera.
+
+| What was different | What it broke | What changed |
+|---|---|---|
+| A group member sharing near the camera, as clearly as the teacher | The cut ended on them (15:43) instead of on Eric calling the room back at 18:25 — **two and a half minutes of group talk would have stayed in**, twice | When a timed discussion is announced ("three minutes … amongst each other"), the cut lasts until the teacher calls the room back ("All right, brothers…", "So brothers, let's hope you had a good conversation…"). "Everybody has a different…" inside a group is not a call back. Unit check added |
+| The recording fetched from a Drive link | The finished video was saved "next to the recording" — a temporary folder that is cleared after six hours | Always saved to Movies/Videos → *Bible Study Video Editor* |
+| A Drive file not shared publicly | A garbled error about "connection adapters" | "That file isn't shared publicly … choose 'Anyone with the link'" |
+| Google's models all overloaded that morning | Switched to Groq on its own — as designed — but every overload message was shown as a warning | Moved behind the scenes |
+| A 3.5 GB 1080p recording | Estimated 2 minutes to render; took 7½ | The estimate learns from this computer's last render |
+
 ## Making it stand on its own (version 1.1)
 
 Building the standalone download, and running it exactly as a recipient would

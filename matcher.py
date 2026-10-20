@@ -1975,9 +1975,80 @@ def find_dead_time(
                     break
             cut_end, kind = landing, "discussion"
 
+    # A group sent off to talk for a stated time ("three minutes to discuss
+    # this amongst each other") can sound as clear as the teacher — a group
+    # member sharing near the camera is fluent, confident speech. When a
+    # breakout was announced, the teacher's own call back ("All right,
+    # brothers…", "let's move on") is what ends it.
+    minutes = announced_breakout(segments, after)
+    if minutes:
+        back = find_call_back(segments, cut_start, limit, minutes)
+        if back and back > cut_end + 3.0:
+            cut_end, kind = back, "discussion"
+
     if cut_end - cut_start < min_seconds:
         return None
     return round(cut_start, 2), round(min(cut_end, limit), 2), kind
+
+
+_NUMBER_WORDS = {"one": 1, "a": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+                 "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+                 "couple": 2, "few": 3}
+_BREAKOUT = re.compile(
+    r"\b(discuss|discussion|amongst|among (?:each other|yourselves)|"
+    r"break(?:ing)? (?:out|into)|in (?:your |our )?groups?|with (?:each other|"
+    r"your neighbou?r|the person)|in pairs|turn to)\b",
+    re.IGNORECASE,
+)
+_MINUTES = re.compile(r"\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten|"
+                      r"a couple of|a few)\s+minutes?\b", re.IGNORECASE)
+_CALL_BACK = re.compile(
+    # "All right, brothers" / "So brothers, …" / "Brothers, …" — the room
+    # addressed as a whole, not "Everybody has a different…" in a group.
+    r"^\W*(?:(?:all ?right|alright|okay|ok|so|well|now)\W+)+"
+    r"(?:brothers|brethren|everyone|everybody|guys|men|folks|church|gentlemen)\b"
+    r"|^\W*(?:brothers|brethren|everyone|everybody|guys|gentlemen)\s*[,.!]"
+    r"|\blet'?s (?:move on|come back|get back|regroup|bring it back|continue|close)\b"
+    r"|\bwelcome back\b|\btime'?s up\b|\bhope you had a good\b"
+    r"|\bwe'?re (?:going|gonna) (?:to )?move on\b",
+    re.IGNORECASE,
+)
+
+
+def announced_breakout(segments: Sequence[Segment], at: float) -> float:
+    """
+    Minutes of group discussion the teacher announced around a question, or 0.
+
+    "You'll have three minutes to discuss this amongst each other" — both a
+    length of time and a sign the room will be talking among itself.
+    """
+    said = " ".join(s.text for s in segments if s.end > at - 45.0 and s.start < at + 15.0)
+    if not _BREAKOUT.search(said):
+        return 0.0
+    match = _MINUTES.search(said)
+    if not match:
+        return 0.0
+    word = match.group(1).lower().replace("a couple of", "couple").replace("a few", "few")
+    return float(word) if word.isdigit() else float(_NUMBER_WORDS.get(word, 0))
+
+
+def find_call_back(segments: Sequence[Segment], start: float, limit: float,
+                   minutes: float) -> Optional[float]:
+    """
+    When the teacher calls the room back after an announced discussion.
+
+    Looked for from a little after the discussion began (a call back in the
+    first moments would be the teacher still explaining the question) to a
+    few minutes past the announced time, and never past the next point.
+    """
+    earliest = start + min(45.0, minutes * 60 * 0.4)
+    latest = min(limit + 0.5, start + minutes * 60 + 240.0)
+    for segment in segments:
+        if segment.start < earliest or segment.start > latest:
+            continue
+        if _CALL_BACK.search(segment.text.strip()):
+            return float(segment.start)
+    return None
 
 
 # Words that mark a sentence as an instruction about the discussion rather
