@@ -6,7 +6,7 @@ name: Release
 
 on:
   push:
-    tags: ["v*"]
+    tags: ["v[0-9]*"]          # versions only — not verify-v… or publish-v…
   workflow_dispatch:
 
 permissions:
