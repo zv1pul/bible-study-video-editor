@@ -30,7 +30,7 @@ jobs:
           python-version: "3.12"
       - name: Which build
         shell: bash
-        run: echo "RUN_ID=${GITHUB_REF_NAME#tryrun-}" >> "$GITHUB_ENV"
+        run: echo "RUN_ID=${GITHUB_REF_NAME##*-}" >> "$GITHUB_ENV"   # the number at the end
       - uses: actions/download-artifact@v5
         with:
           name: ${{ matrix.artifact }}
