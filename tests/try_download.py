@@ -127,12 +127,25 @@ try:
 
         # Stop just the app — not every Python program, which on a computer
         # running this test with Python includes the test itself.
-        if os.name == "nt":
-            with open(os.path.join(home, "running.json"), encoding="utf-8") as handle:
-                pid = json.load(handle)["pid"]
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
-        else:
-            subprocess.run(["pkill", "-f", f"server.port {port}"])
+        def stop(at_port):
+            if os.name == "nt":
+                with open(os.path.join(home, "running.json"), encoding="utf-8") as handle:
+                    pid = json.load(handle)["pid"]
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
+            else:
+                subprocess.run(["pkill", "-f", f"server.port {at_port}"])
+            time.sleep(3)
+
+        # Restarted, it must come back at the same address, so a tab left
+        # open reconnects by itself.
+        stop(port)
+        subprocess.Popen(start, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        again = running_port(240)
+        say(f"after a restart: port {again}")
+        if again != port:
+            problems.append(f"after a restart it came back at a different address ({again}, was {port})")
+        if again:
+            stop(again)
 except Exception:
     problems.append("the test itself stopped: " + traceback.format_exc()[-1200:])
 
