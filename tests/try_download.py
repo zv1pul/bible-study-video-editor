@@ -1,7 +1,7 @@
 """
 Open a finished download the way a person would, on the computer it is for.
 
-    python tests/try_download.py FOLDER_THE_ZIP_WAS_UNPACKED_INTO
+    python tests/try_download.py FOLDER_WITH_THE_ZIP_OR_WHAT_IT_UNPACKED_TO
 
 Starts it with its own launcher (the double-click), waits for the page,
 opens it a second time (which must reuse the running copy, not start
@@ -26,7 +26,25 @@ for stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
+def say(message: str) -> None:
+    print(message, flush=True)
+
+
 folder = os.path.abspath(sys.argv[1])
+zips = glob.glob(os.path.join(folder, "*.zip"))
+if zips:
+    import zipfile
+
+    say(f"unpacking {os.path.basename(zips[0])}")
+    unpacked = os.path.join(folder, "unpacked")
+    if sys.platform == "darwin":
+        # ditto keeps the app's permissions and signature, as Finder does.
+        subprocess.run(["ditto", "-x", "-k", zips[0], unpacked], check=True)
+    else:
+        with zipfile.ZipFile(zips[0]) as bundle:
+            bundle.extractall(unpacked)
+    folder = unpacked
+    say("unpacked")
 home = tempfile.mkdtemp(prefix="bsve_try_home_")
 env = dict(os.environ, BSVE_HOME=home, BROWSER="true" if os.name != "nt" else "echo",
            PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
@@ -39,7 +57,9 @@ if sys.platform == "darwin":
     start = [python, os.path.join(resources, "launcher.py")]
     app_dir = os.path.join(resources, "app")
 else:
-    launcher = glob.glob(os.path.join(folder, "**", "launcher.py"), recursive=True)[0]
+    found = glob.glob(os.path.join(folder, "**", "launcher.py"), recursive=True)
+    say(f"launcher: {found}")
+    launcher = found[0]
     root = os.path.dirname(launcher)
     python = os.path.join(root, "python", "python.exe")
     start = [os.path.join(root, "python", "pythonw.exe"), launcher]
@@ -75,6 +95,7 @@ def servers() -> int:
 
 
 try:
+    say(f"starting: {start}")
     started = time.time()
     subprocess.Popen(start, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     port = running_port(240)

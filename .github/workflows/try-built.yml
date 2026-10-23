@@ -1,0 +1,41 @@
+# Opens the downloads a Release run already built, without building again —
+# for finding out quickly why one won't open. Started by pushing a tag
+# named tryrun-<Release run id>.
+name: Try built downloads
+
+on:
+  push:
+    tags: ["tryrun-*"]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  try:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            artifact: download-windows
+          - runner: macos-15
+            artifact: download-macos-15
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Which build
+        shell: bash
+        run: echo "RUN_ID=${GITHUB_REF_NAME#tryrun-}" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v5
+        with:
+          name: ${{ matrix.artifact }}
+          path: zip
+          run-id: ${{ env.RUN_ID }}
+          github-token: ${{ github.token }}
+      - name: Open it like a person would
+        run: python -u tests/try_download.py zip

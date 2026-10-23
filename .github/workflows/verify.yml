@@ -23,6 +23,9 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
       - name: Download it from the release page
         shell: bash
         env:
@@ -32,10 +35,4 @@ jobs:
           gh release download "$version" --pattern "${{ matrix.pattern }}" --dir zip
           ls -la zip
       - name: Open it like a person would
-        shell: bash
-        run: |
-          mkdir unpacked
-          if [ "$RUNNER_OS" = "macOS" ]; then ditto -x -k zip/*.zip unpacked; else
-            powershell -Command "Expand-Archive -Path (Get-ChildItem zip/*.zip).FullName -DestinationPath unpacked"; fi
-          if [ "$RUNNER_OS" = "macOS" ]; then python3 tests/try_download.py unpacked; else
-            python tests/try_download.py unpacked; fi
+        run: python -u tests/try_download.py zip
