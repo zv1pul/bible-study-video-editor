@@ -125,8 +125,12 @@ try:
         if "ALL OK" not in check.stdout:
             problems.append("its own self-check didn't pass")
 
+        # Stop just the app — not every Python program, which on a computer
+        # running this test with Python includes the test itself.
         if os.name == "nt":
-            subprocess.run(["taskkill", "/F", "/IM", "python.exe", "/T"], capture_output=True)
+            with open(os.path.join(home, "running.json"), encoding="utf-8") as handle:
+                pid = json.load(handle)["pid"]
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
         else:
             subprocess.run(["pkill", "-f", f"server.port {port}"])
 except Exception:
