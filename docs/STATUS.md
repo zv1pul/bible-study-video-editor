@@ -7,6 +7,7 @@
 - **Published version: 1.3.1** (2026-10-23) —
   https://github.com/zv1pul/bible-study-video-editor/releases/latest
   (Mac Apple Silicon, Mac Intel, Windows). Older releases removed; their tags kept.
+  The app always uses address 47823 (falls back only if something else uses it).
 - `control.json` `latest_version` = 1.3.1, so installed copies offer it.
 - Every check passes locally and on GitHub (Apple Silicon, Intel, Windows); the
   three published downloads were each opened and checked on their own computer.
@@ -26,9 +27,6 @@ render with one-click fixes, the chat helper, Report a problem.
 - **Signing** — downloads aren't signed by Apple/Microsoft, so first launch shows
   a security warning (Read me first explains it). Removing it needs an Apple
   Developer account (~$99/yr) and a Windows signing certificate.
-- **Stray draft** — the `verify-v1.3.0` tag started an unneeded release build
-  (fixed in `release.yml`: versions only now). Its unpublished draft is cleared
-  by the next publish.
 - **Ideas not built** — automatic re-render after a fix; more change types for
   the helper (e.g. move a cut start).
 
