@@ -1,9 +1,9 @@
 {
-  "latest_version": "1.2.1",
+  "latest_version": "1.3.0",
   "minimum_version": "0.0.0",
   "message": "",
   "message_kind": "info",
-  "release_notes": "Paste a whole outline at once, preset speakers you can save and edit, a lesson title for the file, and slides you can replace, remove or put back one at a time.",
+  "release_notes": "The app now checks every finished video for you, a helper answers questions and makes changes you approve, and a Report a problem button.",
   "telemetry_url": "",
   "settings": {},
   "vault_url": "",
