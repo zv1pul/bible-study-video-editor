@@ -67,10 +67,22 @@ def pick():
     return BUNDLED, ""
 
 
+# Always the same address when it's free, so a browser tab left open — over
+# a restart, an update or the computer sleeping — reconnects by itself
+# instead of showing "This site can't be reached". Another free one only if
+# something else on the computer already uses it.
+PREFERRED_PORT = 47823
+
+
 def free_port():
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return probe.getsockname()[1]
+    for port in (PREFERRED_PORT, 0):
+        try:
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", port))
+                return probe.getsockname()[1]
+        except OSError:
+            continue
+    return 0
 
 
 def environment():

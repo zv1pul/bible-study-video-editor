@@ -29,6 +29,10 @@ render with one-click fixes, the chat helper, Report a problem.
 - **Stray draft** — the `verify-v1.3.0` tag started an unneeded release build
   (fixed in `release.yml`: versions only now). Its unpublished draft is cleared
   by the next publish.
+- **Ready for the next release (not yet published):** the app always uses the
+  same address (port 47823 when free), so an open tab reconnects after a
+  restart, update or sleep instead of "This site can't be reached". It lives in
+  the launcher, which only changes with a new download, not an auto-update.
 - **Ideas not built** — automatic re-render after a fix; more change types for
   the helper (e.g. move a cut start).
 
