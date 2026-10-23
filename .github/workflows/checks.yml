@@ -39,6 +39,25 @@ jobs:
           python tests/build_formats.py "$RUNNER_TEMP/formats"
           python tests/run_formats.py "$RUNNER_TEMP/formats"
 
+  # Intel Macs: libraries can stop being made for them (onnxruntime did),
+  # which only ever showed up when the download was built.
+  mac-intel:
+    runs-on: macos-15-intel
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -r requirements-local.txt -c constraints.txt
+      - name: Accuracy checks
+        run: python tests/test_units.py
+      - name: Self-check — the page loads, a test video renders, sound decodes
+        run: python selfcheck.py --update-gate
+      - name: A three-minute countdown
+        run: python tests/run_long_countdown.py
+
   windows:
     runs-on: windows-latest
     timeout-minutes: 60

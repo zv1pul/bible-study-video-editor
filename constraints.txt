@@ -42,7 +42,10 @@ MarkupSafe==3.0.3
 moviepy==2.2.1
 narwhals==2.25.0
 numpy==2.5.2
-onnxruntime==1.29.0
+onnxruntime==1.29.0; sys_platform != "darwin" or platform_machine != "x86_64"
+# onnxruntime stopped making Intel Mac builds after 1.23.2 (it runs the
+# speech engine's silence filter); Intel Macs keep that version.
+onnxruntime==1.23.2; sys_platform == "darwin" and platform_machine == "x86_64"
 packaging==26.3
 pandas==3.0.5
 pillow==11.3.0
