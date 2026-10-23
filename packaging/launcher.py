@@ -74,10 +74,26 @@ def pick():
 PREFERRED_PORT = 47823
 
 
+def _in_use(port):
+    """Is something answering at this address right now?"""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
 def free_port():
     for port in (PREFERRED_PORT, 0):
+        if port and _in_use(port):
+            continue
         try:
             with socket.socket() as probe:
+                # A Mac keeps an address reserved for a short while after the
+                # app stops; the app's server is allowed to reuse it, so the
+                # check must be too (as it is on Windows by default).
+                if os.name != "nt":
+                    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 probe.bind(("127.0.0.1", port))
                 return probe.getsockname()[1]
         except OSError:
