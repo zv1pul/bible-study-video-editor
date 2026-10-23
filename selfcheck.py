@@ -31,6 +31,10 @@ import time
 from typing import Callable, List, Optional, Tuple
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# Every check reads another program's report. Both sides use UTF-8, so a
+# dash or an accented name in a message can't trip Windows' old code page.
+UTF8 = {"encoding": "utf-8", "errors": "replace",
+        "env": dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8")}
 Result = Tuple[str, bool, str]          # (what, passed, detail)
 
 
@@ -40,7 +44,7 @@ def _unit_checks() -> Result:
         return "Accuracy checks", False, "The checks are missing from this copy."
     try:
         run = subprocess.run([sys.executable, script], capture_output=True, text=True,
-                             timeout=300, cwd=HERE)
+                             timeout=300, cwd=HERE, **UTF8)
     except Exception as exc:
         return "Accuracy checks", False, f"Could not run: {exc}"
     lines = [line for line in (run.stdout or "").splitlines() if line.strip()]
@@ -90,8 +94,9 @@ def _app_starts() -> Result:
         "GEMINI_API_KEY": env.get("GEMINI_API_KEY") or "selfcheck-placeholder-key",
     })
     try:
-        run = subprocess.run([sys.executable, "-c", _APP_TEST], cwd=HERE, env=env,
-                             capture_output=True, text=True, timeout=240)
+        run = subprocess.run([sys.executable, "-c", _APP_TEST], cwd=HERE,
+                             env=dict(env, **UTF8["env"]), capture_output=True, text=True,
+                             timeout=240, encoding="utf-8", errors="replace")
     except Exception as exc:
         return "App starts", False, f"Could not load the page: {exc}"
     finally:

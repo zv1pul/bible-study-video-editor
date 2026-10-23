@@ -135,6 +135,8 @@ def _passes_checks(folder: str) -> Tuple[bool, str]:
     run = subprocess.run(
         [sys.executable, os.path.join(folder, "selfcheck.py"), "--update-gate"],
         cwd=folder, capture_output=True, text=True, timeout=600,
+        encoding="utf-8", errors="replace",
+        env=dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8"),
     )
     tail = [line for line in (run.stdout or "").splitlines() if line.strip()]
     if run.returncode == 0 and tail and tail[-1] == "ALL OK":
