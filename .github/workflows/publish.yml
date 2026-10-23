@@ -32,3 +32,15 @@ jobs:
             --title "Bible Study Video Editor ${version#v}" \
             --notes-file "docs/release-notes/$version.md"
           gh release view "$version" --json isDraft,url --jq '"published: \(.isDraft | not) \(.url)"'
+      - name: Take older versions off the downloads page
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#publish-}"
+          gh release list --json tagName --jq '.[].tagName' | while read -r tag; do
+            if [ "$tag" != "$version" ]; then
+              echo "Removing the $tag release (its tag stays)"
+              gh release delete "$tag" --yes
+            fi
+          done
+          gh release list

@@ -156,6 +156,19 @@ button that opens Finder or File Explorer, a timings table without the
 technical columns unless asked for, retries kept "behind the scenes", and a
 **Start the next video** button.
 
+## Easier for everyone (version 1.2.1)
+
+| What was asked or found | What changed |
+|---|---|
+| Outlines arrive as one block of text, laid out differently every week | **Paste the whole outline**: `matcher.read_outline` sorts it into the boxes. Seven real outlines are permanent tests (`tests/fixtures/outlines/`) |
+| New teachers keep coming | **Preset speakers** with Save / Update / Remove; the group's teachers ship in `control.json` (`"speakers"`) and can be added for everyone there. Typing a different name over a preset offers *Save as new* and *Replace* — never replaces anybody silently |
+| The finished file was named after the camera's file | An optional **lesson title** names it |
+| One switch turned both slides off; a removed slide couldn't be told from "never set" | Each slide and the logo: replace, put back the original, or remove — decided in one place (`control.artwork_choice`): removed → none, replaced → yours (kept through updates), otherwise the app's own (so a new series' artwork in an update reaches everyone who never changed theirs) |
+| The AI service, model and engines reset every launch | Remembered like every other setting; a saved choice that no longer exists falls back to the default instead of breaking the page |
+| A saved key that stops working was used silently | A warning, and *Use shared keys* |
+| Nothing tested the page itself, or the downloads as people get them | `tests/test_app_flows.py` drives the real page — a whole lesson, presets, paste, slides, settings across restarts, wrong files, bad links, damaged settings — on Apple Silicon, Intel and Windows for every change. `tests/try_download.py` opens each finished download on its own kind of computer before a release is published (and `verify-v*` tags re-test a published one) |
+| An Intel Mac library went missing at release time | Intel Macs are in the checks for every change |
+
 ---
 
 ## The rules these add up to
@@ -184,3 +197,6 @@ technical columns unless asked for, retries kept "behind the scenes", and a
    fallback that still produces a video.
 10. **Never overwrite what somebody made.** A finished video, a saved slide,
     a setting: written beside the old one and swapped in only when complete.
+11. **A choice made once stays made.** Every setting, slide, speaker and key a
+    person changes is the new default on that computer — through restarts and
+    updates — until they change it again, and each can be put back.

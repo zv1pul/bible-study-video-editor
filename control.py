@@ -35,7 +35,7 @@ from typing import Any, Dict, Optional
 
 import requests
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 
 # Where every installed copy looks for instructions. A plain file in the
 # repository: no server to run, no bill, and you change it with a commit.
@@ -533,27 +533,59 @@ def set_pref(name: str, value: Any) -> None:
 SPEAKERS_KEPT = 15
 
 
-def speakers() -> list:
-    """Recent speakers, most recent first: [{"name": ..., "title": ...}]."""
+def _clean_speakers(entries) -> list:
     out = []
-    for entry in settings().get("speakers") or []:
+    for entry in entries or []:
         if isinstance(entry, dict) and str(entry.get("name") or "").strip():
             out.append({"name": str(entry["name"]).strip(),
                         "title": str(entry.get("title") or "").strip()})
     return out
 
 
+def group_speakers() -> list:
+    """
+    The group's teachers, from control.json — so a new copy already knows
+    them, and a new teacher can be added for everybody by editing one file.
+    The live file wins over the one the app shipped with.
+    """
+    live = fetch_control()
+    source = live if "speakers" in live else bundled_control()
+    return _clean_speakers(source.get("speakers"))
+
+
+def speakers() -> list:
+    """
+    People to pick from, most recently used first: [{"name", "title"}].
+
+    The ones used on this computer come first; the group's teachers follow,
+    unless this computer has its own entry for them or removed them.
+    """
+    own = _clean_speakers(settings().get("speakers"))
+    hidden = {name.lower() for name in settings().get("hidden_speakers") or []}
+    known = {entry["name"].lower() for entry in own}
+    return own + [entry for entry in group_speakers()
+                  if entry["name"].lower() not in known | hidden]
+
+
 def remember_speaker(name: str, title: str) -> None:
     name, title = (name or "").strip(), (title or "").strip()
     if not name:
         return
-    rest = [s for s in speakers() if s["name"].lower() != name.lower()]
-    set_setting("speakers", ([{"name": name, "title": title}] + rest)[:SPEAKERS_KEPT])
+    with _LOCK:
+        rest = [s for s in _clean_speakers(settings().get("speakers"))
+                if s["name"].lower() != name.lower()]
+        set_setting("speakers", ([{"name": name, "title": title}] + rest)[:SPEAKERS_KEPT])
+        set_setting("hidden_speakers", [h for h in settings().get("hidden_speakers") or []
+                                        if h.lower() != name.lower()])
 
 
 def forget_speaker(name: str) -> None:
-    set_setting("speakers", [s for s in speakers()
-                             if s["name"].lower() != (name or "").strip().lower()])
+    name = (name or "").strip()
+    with _LOCK:
+        set_setting("speakers", [s for s in _clean_speakers(settings().get("speakers"))
+                                 if s["name"].lower() != name.lower()])
+        hidden = [h for h in settings().get("hidden_speakers") or [] if h.lower() != name.lower()]
+        set_setting("hidden_speakers", hidden + [name])
 
 
 ARTWORK_NAMES = ("intro", "outro", "logo")
@@ -588,6 +620,7 @@ def save_artwork(name: str, source: str) -> str:
     temporary = os.path.join(artwork_dir(), f".{name}.new.png")
     editor.prepare_slide(source, temporary, kind="logo" if name == "logo" else "slide")
     os.replace(temporary, final)
+    set_artwork_off(name, False)             # adding one means using it
     return final
 
 
@@ -596,6 +629,40 @@ def forget_artwork(name: str) -> None:
         os.remove(os.path.join(artwork_dir(), f"{name}.png"))
     except OSError:
         pass
+
+
+def artwork_off(name: str) -> bool:
+    """True when this computer chose to have no slide (or logo) of this kind."""
+    return bool(prefs().get(f"{name}_off"))
+
+
+def set_artwork_off(name: str, off: bool) -> None:
+    set_pref(f"{name}_off", bool(off))
+
+
+def remove_artwork(name: str) -> None:
+    """No slide of this kind any more: the saved one is deleted, none is shown."""
+    forget_artwork(name)
+    set_artwork_off(name, True)
+
+
+def artwork_choice(name: str, built_in: str = "") -> str:
+    """
+    The slide or logo a video uses, decided in one place:
+
+      * removed on this computer        -> none
+      * replaced on this computer       -> the replacement (kept through updates)
+      * otherwise                       -> the one that comes with the app — so a
+                                           new series' artwork, shipped in an
+                                           update, reaches everyone who hasn't
+                                           chosen their own
+    """
+    if artwork_off(name):
+        return ""
+    own = saved_artwork(name)
+    if own:
+        return own
+    return built_in if built_in and os.path.exists(built_in) else ""
 
 
 # --------------------------------------------------------------------------

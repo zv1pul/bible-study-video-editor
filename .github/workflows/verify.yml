@@ -1,0 +1,41 @@
+# Downloads a PUBLISHED release exactly as people get it, and opens each
+# download on the computer it is for. Started by pushing a tag named
+# verify-v<version>.
+name: Verify a release
+
+on:
+  push:
+    tags: ["verify-v*"]
+
+jobs:
+  try:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            pattern: "*Apple.Silicon*"
+          - runner: macos-15-intel
+            pattern: "*Intel*"
+          - runner: windows-latest
+            pattern: "*Windows*"
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: Download it from the release page
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#verify-}"
+          gh release download "$version" --pattern "${{ matrix.pattern }}" --dir zip
+          ls -la zip
+      - name: Open it like a person would
+        shell: bash
+        run: |
+          mkdir unpacked
+          if [ "$RUNNER_OS" = "macOS" ]; then ditto -x -k zip/*.zip unpacked; else
+            powershell -Command "Expand-Archive -Path (Get-ChildItem zip/*.zip).FullName -DestinationPath unpacked"; fi
+          if [ "$RUNNER_OS" = "macOS" ]; then python3 tests/try_download.py unpacked; else
+            python tests/try_download.py unpacked; fi

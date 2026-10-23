@@ -190,7 +190,12 @@ def secret(name: str) -> str:
     Read a key: st.secrets, then the environment, then a key saved on this
     computer, then a group vault (if one is configured), and finally the
     group's shared keys that come with the app — so nobody has to set one up.
+
+    BSVE_NO_AI=1 turns every key off (the automated checks use it, so they
+    never spend the group's free allowance).
     """
+    if os.environ.get("BSVE_NO_AI"):
+        return ""
     try:
         if name in st.secrets:
             return str(st.secrets[name])
@@ -435,7 +440,10 @@ PREF_DEFAULTS = {
     "discussion_seconds": int(matcher.APPLICATION_PAUSE_SECONDS),
     "quality": "small" if HOSTED else "balanced",
     "trim_ends": True,
-    "use_bookends": True,
+    "provider": "gemini",
+    "llm_model": "auto",
+    "engine": "local",
+    "render_engine": "auto",
     "bookend_seconds": 5,
     "card_style": "fullscreen",
     "overview_card": True,
@@ -448,7 +456,7 @@ PREF_DEFAULTS = {
 }
 
 
-def remembered(name: str) -> str:
+def remembered(name: str, options: list = None) -> str:
     """
     The widget key for a remembered setting, started from what was saved.
 
@@ -459,8 +467,9 @@ def remembered(name: str) -> str:
     if key not in st.session_state:
         value = control.prefs().get(name, PREF_DEFAULTS[name])
         default = PREF_DEFAULTS[name]
-        if name in PREF_CHOICES and value not in PREF_CHOICES[name]:
-            value = default
+        choices = options if options is not None else PREF_CHOICES.get(name)
+        if choices is not None and value not in choices:
+            value = default if default in choices else choices[0]
         elif name in PREF_RANGES:
             low, high = PREF_RANGES[name]
             try:
@@ -483,26 +492,28 @@ def save_prefs() -> None:
 
 
 def artwork_in_use(name: str) -> str:
-    """The slide or logo a video will use: the one saved here, else the built-in one."""
-    return control.saved_artwork(name) or asset_default(name)
+    """The slide or logo a video will use (see control.artwork_choice)."""
+    return control.artwork_choice(name, asset_default(name))
 
 
-def artwork_editor(name: str, label: str, types: list) -> None:
-    """Show a slide, and let it be replaced for good or put back."""
+def artwork_editor(name: str, label: str, types: list, where: str = "") -> None:
+    """Show a slide; replace it for good, put the original back, or remove it."""
     own = control.saved_artwork(name)
-    current = own or asset_default(name)
+    built_in = asset_default(name)
+    current = artwork_in_use(name)
     if current:
         st.image(current, caption=f"{label}" + (" — your own" if own else ""),
                  width="stretch")
     else:
-        st.caption(f"No {label.lower()} yet.")
+        st.caption(f"No {label.lower()}{where}.")
     round_key = f"{name}_upload_round"
     upload = st.file_uploader(
-        f"Replace the {label.lower()}", type=types,
+        f"Replace the {label.lower()}" if current else f"Add a {label.lower()}",
+        type=types,
         key=f"{name}_upload_{st.session_state.get(round_key, 0)}",
-        help="Saved on this computer and used for every video until you "
-             "change it again. A PDF works too — its first page is used. "
-             "Any shape is fine; it is fitted to a widescreen frame.",
+        help="Saved on this computer and used for every video — and kept "
+             "through updates — until you change it again. A PDF works too "
+             "(its first page). Any shape is fitted to a widescreen frame.",
     )
     if upload is not None:
         temporary = os.path.join(workdir(), f"upload_{name}{os.path.splitext(upload.name)[1]}")
@@ -523,16 +534,27 @@ def artwork_editor(name: str, label: str, types: list) -> None:
                 os.remove(temporary)
             except OSError:
                 pass
-    if own and asset_default(name):
-        if st.button(f"Put back the original {label.lower()}", key=f"{name}_reset",
-                     width="stretch"):
-            control.forget_artwork(name)
-            st.rerun()
+
+    def _restore():
+        control.forget_artwork(name)
+        control.set_artwork_off(name, False)
+
+    actions = []
+    if own and built_in:
+        actions.append(("Put back the original", _restore, f"{name}_reset"))
+    if current:
+        actions.append(("Remove", lambda: control.remove_artwork(name), f"{name}_remove"))
+    elif built_in:
+        actions.append((f"Use the original {label.lower()}", _restore, f"{name}_reset"))
+    if actions:
+        for column, (text, action, key) in zip(st.columns(len(actions)), actions):
+            column.button(text, key=key, on_click=action, width="stretch")
 
 
 with st.sidebar:
     if st.session_state.get("flash"):
-        st.success(st.session_state.pop("flash"))
+        # A pop-up, so it's seen wherever on the page the button was.
+        st.toast(st.session_state.pop("flash"), icon="✅")
 
     st.header("⚙️ Settings")
     st.caption("Remembered on this computer until you change them.")
@@ -568,17 +590,18 @@ with st.sidebar:
     )
 
     st.subheader("🖼 Opening and closing slides")
-    use_bookends = st.checkbox(
-        "Show them at the start and end", key=remembered("use_bookends"),
+    # Before 1.2.1 one switch turned both slides off; carry that choice over.
+    if control.prefs().get("use_bookends") is False and \
+            "intro_off" not in control.prefs():
+        control.set_artwork_off("intro", True)
+        control.set_artwork_off("outro", True)
+    bookend_seconds = st.slider(
+        "Seconds each is shown", 2, 15, key=remembered("bookend_seconds"),
     )
-    if use_bookends:
-        bookend_seconds = st.slider(
-            "Seconds each is shown", 2, 15, key=remembered("bookend_seconds"),
-        )
-        artwork_editor("intro", "Opening slide", editor.SLIDE_TYPES)
-        artwork_editor("outro", "Closing slide", editor.SLIDE_TYPES)
-    else:
-        bookend_seconds = int(st.session_state.get("pref_bookend_seconds", 5))
+    artwork_editor("intro", "Opening slide", editor.SLIDE_TYPES,
+                   " — videos start straight on the recording")
+    artwork_editor("outro", "Closing slide", editor.SLIDE_TYPES,
+                   " — videos end on the recording")
 
     with st.expander("More settings", expanded=False):
         st.markdown("**Cards**")
@@ -613,7 +636,7 @@ with st.sidebar:
                  "with a floor so it can be written down.",
         )
         st.markdown("**Logo on each card**")
-        artwork_editor("logo", "Logo", ["png", "jpg", "jpeg", "webp"])
+        artwork_editor("logo", "Logo", ["png", "jpg", "jpeg", "webp"], " on the cards")
 
         st.divider()
         st.markdown("**Listening to the recording**")
@@ -630,6 +653,7 @@ with st.sidebar:
         engine = st.radio(
             "Engine",
             options=engine_options,
+            key=remembered("engine", engine_options),
             format_func=lambda key: {
                 "local": "On this computer (private, works offline)",
                 "groq": "Online (Groq — faster)",
@@ -654,15 +678,21 @@ with st.sidebar:
         provider = st.selectbox(
             "Service",
             options=list(matcher.PROVIDERS.keys()),
+            key=remembered("provider", list(matcher.PROVIDERS.keys())),
             format_func=lambda key: matcher.PROVIDERS[key]["label"],
             help="Both are free. If one is busy or used up for the day, the "
                  "app switches to the other automatically.",
         )
         provider_info = matcher.PROVIDERS[provider]
         backup_provider = "groq" if provider == "gemini" else "gemini"
+        _model_options = matcher.model_options(provider)
+        _model_key = remembered("llm_model", _model_options)
+        if st.session_state[_model_key] not in _model_options:
+            st.session_state[_model_key] = _model_options[0]      # the service changed
         llm_model = st.selectbox(
             "Model",
-            options=matcher.model_options(provider),
+            options=_model_options,
+            key=_model_key,
             help="'auto' tries the best model first and moves down the list if one "
                  "is retired, rate limited or overloaded.",
         )
@@ -726,6 +756,7 @@ with st.sidebar:
         render_engine = st.radio(
             "Rendering engine",
             options=["auto", "moviepy"],
+            key=remembered("render_engine", ["auto", "moviepy"]),
             format_func=lambda key: {
                 "auto": "Fast (recommended)",
                 "moviepy": "Compatible (slower)",
@@ -898,7 +929,8 @@ if control.settings().get("self_check_problems"):
     )
 
 # First run: no AI key anywhere yet. One box, a minute's work, and never again.
-if not has_any_key() and not st.session_state.get("skip_key_setup"):
+if not has_any_key() and not st.session_state.get("skip_key_setup") \
+        and not os.environ.get("BSVE_NO_AI"):
     with st.container(border=True):
         st.markdown("**One-time setup — connect the AI that finds each point**")
         _ways = ["Use my own free Google key"]
@@ -949,7 +981,7 @@ if not has_any_key() and not st.session_state.get("skip_key_setup"):
             st.rerun()
         st.stop()
 
-if not has_any_key():
+if not has_any_key() and not os.environ.get("BSVE_NO_AI"):
     st.warning(
         "No AI key is connected, so points are matched by keywords only — much "
         "less accurate. Add one under **More settings → AI keys** in the "
@@ -1085,43 +1117,128 @@ with left:
             st.caption(f"🎞 **{os.path.basename(local_path)}**")
 
     st.subheader("2 · The speaker")
+    NEW_SPEAKER = "— Someone new —"
     _known = control.speakers()
-    if _known:
-        def _fill_speaker():
-            picked = st.session_state.get("speaker_pick")
-            for entry in _known:
-                if picked == entry["name"]:
-                    st.session_state.speaker_name_box = entry["name"]
-                    st.session_state.speaker_title_box = entry["title"]
-                    return
-            st.session_state.speaker_name_box = ""
-            st.session_state.speaker_title_box = ""
+    _names = [entry["name"] for entry in _known]
+    if st.session_state.get("speaker_pick", NEW_SPEAKER) not in [NEW_SPEAKER] + _names:
+        st.session_state.speaker_pick = NEW_SPEAKER     # removed elsewhere since
 
+    def _fill_speaker():
+        picked = st.session_state.get("speaker_pick")
+        entry = next((e for e in control.speakers() if e["name"] == picked), None)
+        st.session_state.speaker_name_box = entry["name"] if entry else ""
+        st.session_state.speaker_title_box = entry["title"] if entry else ""
+
+    def _speaker_label(name: str) -> str:
+        entry = next((e for e in _known if e["name"] == name), None)
+        if not entry:
+            return name
+        return f"{entry['name']} — {entry['title']}" if entry["title"] else entry["name"]
+
+    if _known:
         st.selectbox(
-            "Pick someone who has spoken before",
-            options=["— Someone new —"] + [entry["name"] for entry in _known],
+            "Preset speakers",
+            options=[NEW_SPEAKER] + _names,
             key="speaker_pick",
-            format_func=lambda n: n if n.startswith("—") else next(
-                (f"{e['name']} — {e['title']}" if e["title"] else e["name"])
-                for e in _known if e["name"] == n),
+            format_func=_speaker_label,
             on_change=_fill_speaker,
+            help="Fills in the name and title. You can still change either "
+                 "box afterwards — for this video only, or press Update "
+                 "preset to keep the change.",
         )
     speaker_name = st.text_input("Name", placeholder="Pastor John Smith",
                                  key="speaker_name_box")
     speaker_title = st.text_input("Title", placeholder="Teaching Leader",
                                   key="speaker_title_box")
-    if _known and not str(st.session_state.get("speaker_pick", "—")).startswith("—"):
-        def _forget_speaker():
-            control.forget_speaker(st.session_state.speaker_pick)
-            st.session_state.speaker_pick = "— Someone new —"
-            st.session_state.speaker_name_box = ""
-            st.session_state.speaker_title_box = ""
 
-        st.button("Remove them from the list", key="forget_speaker",
-                  on_click=_forget_speaker)
+    _picked = next((e for e in _known
+                    if e["name"] == st.session_state.get("speaker_pick")), None)
+    _typed_name, _typed_title = speaker_name.strip(), speaker_title.strip()
+    _same_name = next((e for e in _known
+                       if e["name"].lower() == _typed_name.lower()), None)
+
+    def _save_preset():
+        control.remember_speaker(_typed_name, _typed_title)
+        st.session_state.speaker_pick = _typed_name
+        st.session_state.flash = f"{_typed_name} is saved as a preset speaker."
+
+    def _update_preset():
+        if _picked and _picked["name"].lower() != _typed_name.lower():
+            control.forget_speaker(_picked["name"])
+        control.remember_speaker(_typed_name, _typed_title)
+        st.session_state.speaker_pick = _typed_name
+        st.session_state.flash = f"Preset updated: {_typed_name}."
+
+    def _remove_preset():
+        control.forget_speaker(_picked["name"])
+        st.session_state.speaker_pick = NEW_SPEAKER
+        st.session_state.speaker_name_box = ""
+        st.session_state.speaker_title_box = ""
+
+    _buttons = []
+    _renamed = bool(_picked and _typed_name
+                    and _picked["name"].lower() != _typed_name.lower())
+    if _renamed and not _same_name:
+        # A different person typed over a preset: keep both choices open,
+        # and never replace somebody by accident.
+        _buttons.append(("⭐ Save as a new preset", _save_preset, "save_preset"))
+        _buttons.append((f"💾 Replace {_picked['name'].split()[0]}", _update_preset,
+                         "update_preset"))
+    elif _picked and _typed_name and not _renamed and (
+            _picked["name"] != _typed_name or _picked["title"] != _typed_title):
+        _buttons.append(("💾 Update preset", _update_preset, "update_preset"))
+    elif _typed_name and not _same_name:
+        _buttons.append(("⭐ Save as a preset", _save_preset, "save_preset"))
+    elif _same_name and not _picked and _same_name["title"] != _typed_title:
+        _picked = _same_name
+        _buttons.append(("💾 Update preset", _update_preset, "update_preset"))
+    if _picked and st.session_state.get("speaker_pick") == _picked["name"] and not _renamed:
+        _buttons.append(("Remove from presets", _remove_preset, "remove_preset"))
+    if _buttons:
+        for _column, (_label, _action, _key) in zip(st.columns(len(_buttons)), _buttons):
+            _column.button(_label, key=_key, on_click=_action, width="stretch")
 
 with right:
     st.subheader("3 · The lesson outline")
+
+    def _fill_from_paste():
+        found = matcher.read_outline(st.session_state.get("paste_box", ""))
+        if not (found["takeaway"] or found["divisions"]):
+            st.session_state.flash = ("Couldn't find a takeaway or divisions in that text — "
+                                      "fill in the boxes below by hand.")
+            return
+        if found["title"]:
+            st.session_state.lesson_title_box = found["title"]
+        st.session_state.takeaway_box = found["takeaway"]
+        st.session_state.divisions_box = "\n".join(d["title"] for d in found["divisions"])
+        for key in [k for k in st.session_state.keys()
+                    if str(k).startswith(("principles_", "applications_"))]:
+            st.session_state[key] = ""
+        for index, item in enumerate(found["divisions"], start=1):
+            st.session_state[f"principles_{index}"] = item["principles"]
+            st.session_state[f"applications_{index}"] = item["applications"]
+        st.session_state.paste_box = ""
+        st.session_state.flash = (
+            f"Filled in {len(found['divisions'])} division(s) — check the boxes below.")
+
+    with st.expander("📋 Paste the whole outline at once", expanded=False):
+        st.text_area(
+            "Outline", key="paste_box", height=200, label_visibility="collapsed",
+            placeholder="TAKEAWAY\nGrace precedes obedience.\n\nDIVISION 1 — The Rescue "
+                        "(Exodus 14)\nPrinciple\nGod fights for His people.\nApplication "
+                        "Question\nWhere do you need to stand still?",
+            help="Paste the outline as it was sent to you — the takeaway, the "
+                 "divisions, their principles and questions are sorted into the "
+                 "boxes below, where you can check and change them.",
+        )
+        st.button("Fill in the boxes below", on_click=_fill_from_paste, width="stretch",
+                  disabled=not st.session_state.get("paste_box", "").strip())
+
+    lesson_title = st.text_input(
+        "Lesson title (optional)", key="lesson_title_box",
+        placeholder="Romans 3:21-26 - Lesson 5",
+        help="Names the finished video file. Left empty, it's named after the recording.",
+    )
     st.caption(
         "Enter the divisions first. A section then appears under each one for "
         "the principles and applications that belong to it."
@@ -1226,8 +1343,8 @@ with right:
         )
 
 logo_path = artwork_in_use("logo")
-intro_path = artwork_in_use("intro") if use_bookends else ""
-outro_path = artwork_in_use("outro") if use_bookends else ""
+intro_path = artwork_in_use("intro")
+outro_path = artwork_in_use("outro")
 
 outline = {"takeaway": takeaway, "divisions": divisions, "scripture": scripture}
 points = matcher.build_lesson_points(outline)
@@ -1536,6 +1653,12 @@ if st.session_state.verdicts:
             "The AI couldn't be reached, so points were placed by matching "
             "keywords. That is usually close, but read every row before "
             "rendering — or press Analyse again in a few minutes."
+        )
+    if control.saved_keys() and any("key was turned down" in n for n in _notes):
+        st.warning(
+            "The AI key saved on this computer was turned down, so the backup "
+            "service was used. Under **More settings → AI keys**, press **Use "
+            "shared keys** — or save a new key of your own."
         )
     if _behind or any("AI matching unavailable" in n for n in _notes):
         with st.expander("Behind the scenes"):
@@ -1932,7 +2055,8 @@ def save_finished_copy(path: str, folder: str, stem: str) -> str:
         return ""
     done[made] = target
     return target
-PACKAGED_OUTPUT_DIR = os.path.join(VIDEOS_DIR, "Bible Study Video Editor")
+PACKAGED_OUTPUT_DIR = os.environ.get("BSVE_OUTPUT_DIR") or \
+    os.path.join(VIDEOS_DIR, "Bible Study Video Editor")
 IS_PACKAGED = bool(os.environ.get("BSVE_HOME"))
 STATIC_MAX_AGE_HOURS = 6
 
@@ -1974,7 +2098,8 @@ def publish_for_download(path: str, name: str) -> str:
         return ""
 
 LESSON_BOXES = ("takeaway_box", "divisions_box", "scripture_box", "link_box",
-                "local_path_box", "speaker_name_box", "speaker_title_box")
+                "local_path_box", "speaker_name_box", "speaker_title_box",
+                "lesson_title_box", "paste_box")
 
 
 def start_next_video() -> None:
@@ -2004,7 +2129,7 @@ if st.session_state.output_path and os.path.exists(st.session_state.output_path)
     if size_mb <= 60:
         st.video(path)
 
-    stem = os.path.splitext(
+    stem = (st.session_state.get("lesson_title_box") or "").strip() or os.path.splitext(
         st.session_state.get("source_name")
         or os.path.basename(st.session_state.video_path or "lesson")
     )[0].strip()

@@ -67,12 +67,11 @@ PROVIDERS = {
         # Tested against the live account on the real prompt:
         #   gpt-oss-120b   reliable
         #   gpt-oss-20b    reliable once the reply is schema-constrained
-        #   compound-mini  works, but routes to gpt-oss-120b and shares its limit
+        #   compound-mini  retired by Groq (Oct 2026); removed
         #   qwen3.6-27b    fails JSON validation on this prompt; left out
         "chain": [
             "openai/gpt-oss-120b",
             "openai/gpt-oss-20b",
-            "groq/compound-mini",
         ],
         "key_url": "https://console.groq.com/keys",
         "list_url": "https://api.groq.com/openai/v1/models",
@@ -507,6 +506,125 @@ def _tidy_reference(line: str) -> str:
         else:
             out.append(word[:1].upper() + word[1:].lower())
     return " ".join(out)
+
+
+# --------------------------------------------------------------------------
+# A whole outline pasted in one go
+# --------------------------------------------------------------------------
+#
+# Outlines arrive as one block of text — from an email, a document, a chat —
+# laid out in many slightly different ways: "TAKEAWAY" on its own line or
+# "Takeaway:" before the text, "Principle" indented by thirty spaces, the
+# scripture under the division or on the same line, "[30-SECOND COUNTDOWN]"
+# notes, "⸻" separators. read_outline() sorts any of them into the boxes.
+
+_OUT_TITLE = re.compile(r"^\s*(?:lesson\s+)?t?itle\s*[:\-–—]\s*(.+)$", re.IGNORECASE)
+_OUT_TAKEAWAY = re.compile(r"^\s*(?:today'?s\s+)?take\s*-?\s*away\b\s*[:\-–—]?\s*(.*)$",
+                           re.IGNORECASE)
+_OUT_DIVISION = re.compile(r"^\s*division\b", re.IGNORECASE)
+_OUT_PRINCIPLE = re.compile(r"^\s*principles?\b\s*(?:#?\d+)?\s*[:\-–—]?\s*(.*)$", re.IGNORECASE)
+_OUT_QUESTION = re.compile(
+    r"^\s*(?:\d+\s*-?\s*minutes?\s+)?"
+    r"((?:(?:final|closing|personal|group|last)\s+)?(?:reflection|application|discussion)"
+    r"(?:\s+questions?)?|applications?)\b\s*(?:#?\d+)?\s*[:\-–—]?\s*(.*)$",
+    re.IGNORECASE,
+)
+_OUT_SKIP = re.compile(r"^\s*(?:[⸻—–\-_=*•·]+|\[[^\]]*\]|no application.*|https?://\S+)\s*$",
+                       re.IGNORECASE)
+_OUT_REFERENCE = re.compile(
+    r"^\s*\(?\s*(?:[1-3]\s*)?[A-Z][a-z]+\.?\s+\d+\s*:\s*\d+(?:\s*[-–—]\s*\d+)?"
+    r"(?:\s*[,;]\s*\d+(?:\s*:\s*\d+)?(?:\s*[-–—]\s*\d+)?)*\s*\)?\s*$"
+)
+
+
+def read_outline(text: str) -> dict:
+    """
+    Sort a pasted outline into its parts.
+
+        {"title": "Romans 3:21-26 - Lesson 5", "takeaway": "...",
+         "divisions": [{"title": "DIVISION 1 — ... (Romans 3:21–24)",
+                        "principles": "...", "applications": "..."}]}
+
+    Each "Application Question" heading is one question, however many lines
+    it is written over; a "Final Reflection Question" keeps its name so the
+    card is headed with it. Anything it can't place is left out rather than
+    guessed — the boxes are there to check and correct.
+    """
+    out = {"title": "", "takeaway": "", "divisions": []}
+    section, question = "", None
+
+    def division() -> dict:
+        if not out["divisions"]:
+            out["divisions"].append({"title": "", "principles": [], "applications": []})
+        return out["divisions"][-1]
+
+    def close_question():
+        nonlocal question
+        if question and (question[1] or []):
+            body = " ".join(question[1]).strip()
+            division()["applications"].append(
+                f"{question[0]}  {body}" if question[0] else body)
+        question = None
+
+    for raw in str(text or "").replace("\r", "").split("\n"):
+        line = re.sub(r"[ \t\u00a0]+", " ", raw).strip()
+        if not line or _OUT_SKIP.match(line):
+            continue
+        match = _OUT_TITLE.match(line)
+        if match and not out["takeaway"] and not out["divisions"]:
+            out["title"] = match.group(1).strip()
+            continue
+        match = _OUT_TAKEAWAY.match(line)
+        if match:
+            close_question()
+            section = "takeaway"
+            if match.group(1).strip():
+                out["takeaway"] = (out["takeaway"] + " " + match.group(1).strip()).strip()
+            continue
+        if _OUT_DIVISION.match(line):
+            close_question()
+            out["divisions"].append({"title": line, "principles": [], "applications": []})
+            section = "division"
+            continue
+        match = _OUT_PRINCIPLE.match(line)
+        if match:
+            close_question()
+            section = "principle"
+            if match.group(1).strip():
+                division()["principles"].append(match.group(1).strip())
+            continue
+        match = _OUT_QUESTION.match(line)
+        if match:
+            close_question()
+            label = match.group(1).strip()
+            named = bool(re.match(r"(final|closing|personal|group|last)\b", label, re.IGNORECASE))
+            question = ["Final Reflection Question" if re.match(r"final", label, re.I)
+                        else (label.title() if named else ""), []]
+            section = "question"
+            if match.group(2).strip():
+                question[1].append(match.group(2).strip())
+            continue
+
+        if section == "takeaway":
+            out["takeaway"] = (out["takeaway"] + " " + line).strip()
+        elif section == "division":
+            # The scripture, or the rest of a long division title.
+            current = division()
+            current["title"] = (current["title"] + ("\n" if _OUT_REFERENCE.match(line) else " ")
+                                + line).strip()
+        elif section == "principle":
+            division()["principles"].append(line)
+        elif section == "question" and question is not None:
+            question[1].append(line)
+    close_question()
+
+    out["divisions"] = [
+        {"title": d["title"] or f"Division {i}",
+         "principles": "\n".join(d["principles"]),
+         "applications": "\n".join(d["applications"])}
+        for i, d in enumerate(out["divisions"], start=1)
+    ]
+    return out
 
 
 def split_divisions(text) -> List[str]:

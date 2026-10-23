@@ -449,6 +449,50 @@ cut = matcher.find_dead_time(quiet, 6.0, 210.0)
 check_that("without an announced discussion, clear speech still ends the cut",
            cut is None or cut[1] < 60.5, cut)
 
+# A whole outline pasted in one go — every format a real lesson arrived in.
+OUTLINES = os.path.join(HERE, "fixtures", "outlines")
+expected = {   # file: (title, divisions, principles, questions)
+    "lesson1_grace.txt": ("", 3, 3, 3),
+    "lesson2_gospel.txt": ("", 3, 3, 2),
+    "lesson3_wrath.txt": ("", 3, 3, 2),
+    "lesson5_judgment.txt": ("", 2, 2, 2),
+    "lesson6_no_defense.txt": ("Romans 3:1-20 - Lesson 4", 3, 3, 3),
+    "lesson7_righteousness.txt": ("Romans 3:21-26 - Lesson 5", 2, 2, 2),
+}
+for name, (title, n_div, n_prin, n_q) in expected.items():
+    with open(os.path.join(OUTLINES, name), encoding="utf-8") as handle:
+        found = matcher.read_outline(handle.read())
+    outline = {"takeaway": found["takeaway"], "divisions": found["divisions"]}
+    points = matcher.build_lesson_points(outline)
+    kinds = [p.category.lower() for p in points]
+    check(f"pasted outline {name}: title, takeaway and every part found",
+          (found["title"], bool(found["takeaway"]), len(found["divisions"]),
+           kinds.count("principle"), kinds.count("application")),
+          (title, True, n_div, n_prin, n_q))
+with open(os.path.join(OUTLINES, "lesson1_grace.txt"), encoding="utf-8") as handle:
+    grace = matcher.read_outline(handle.read())
+check_that("a question written over several lines stays one question",
+           "(a) make excuses" in grace["divisions"][0]["applications"]
+           and "Why?" in grace["divisions"][0]["applications"]
+           and "\n" not in grace["divisions"][0]["applications"])
+with open(os.path.join(OUTLINES, "lesson2_gospel.txt"), encoding="utf-8") as handle:
+    gospel = matcher.read_outline(handle.read())
+check("the scripture under a division stays with that division",
+      matcher.split_divisions("\n".join(d["title"] for d in gospel["divisions"]))[0],
+      "DIVISION 1 — GOSPEL CLAIM (Romans 1:1–7)")
+check_that("notes like [30-SECOND COUNTDOWN] and separators are left out",
+           all("COUNTDOWN" not in d["applications"] and "⸻" not in d["title"]
+               for d in gospel["divisions"]))
+with open(os.path.join(OUTLINES, "lesson6_no_defense.txt"), encoding="utf-8") as handle:
+    lesson4 = matcher.read_outline(handle.read())
+labels = [p.label for p in matcher.build_lesson_points(
+    {"takeaway": lesson4["takeaway"], "divisions": lesson4["divisions"]})
+    if p.category.lower() == "application"]
+check("a Final Reflection Question keeps its own heading", labels[-1], "Final Reflection")
+check("text with no outline in it fills nothing",
+      matcher.read_outline("hi, here is the link for tonight's video"),
+      {"title": "", "takeaway": "", "divisions": []})
+
 check("countdown lengths are read the way people type them",
       [editor.parse_seconds(t) for t in ("45", "45s", "2:30", "2 min", "1.5 min", "", "abc", "0", "99:00")],
       [45.0, 45.0, 150.0, 120.0, 90.0, 0.0, 0.0, 0.0, 0.0])
@@ -507,7 +551,59 @@ try:
     control.remember_speaker("Eric Roachford", "Substitute Teaching Leader")
     control.remember_speaker("raneil ensomo", "Teaching Leader")
     check("speakers are remembered most recent first, without duplicates",
-          [s["name"] for s in control.speakers()], ["raneil ensomo", "Eric Roachford"])
+          [s["name"] for s in control.speakers()][:2], ["raneil ensomo", "Eric Roachford"])
+    names = [s["name"].lower() for s in control.speakers()]
+    check("the group's teachers come with the app, each listed once",
+          sorted(set(names)) == sorted(names) and "nathan minchen" in names, True)
+    control.forget_speaker("Nathan Minchen")
+    check_that("a group teacher removed on this computer stays removed",
+               "nathan minchen" not in [s["name"].lower() for s in control.speakers()])
+
+    # Slides: replace -> the new default, through updates; remove; restore.
+    control.forget_artwork("intro")
+    old_release = os.path.join(scratch, "app_1.2.0_intro.png")
+    new_release = os.path.join(scratch, "app_1.3.0_intro.png")
+    Image.new("RGB", (1920, 1080), (10, 10, 10)).save(old_release)
+    Image.new("RGB", (1920, 1080), (250, 250, 250)).save(new_release)
+    check("with nothing chosen, the slide that comes with the app is used",
+          control.artwork_choice("intro", old_release), old_release)
+    check("…and an update's new series artwork reaches those who never changed it",
+          control.artwork_choice("intro", new_release), new_release)
+    first = os.path.join(scratch, "first.png")
+    Image.new("RGB", (1920, 1080), (200, 0, 0)).save(first)
+    mine = control.save_artwork("intro", first)
+    check("a replaced opening slide becomes the one every video uses",
+          control.artwork_choice("intro", old_release), mine)
+    check_that("…and an update doesn't put the old one back",
+               control.artwork_choice("intro", new_release) == mine)
+    second = os.path.join(scratch, "second.png")
+    Image.new("RGB", (1920, 1080), (0, 0, 200)).save(second)
+    control.save_artwork("intro", second)
+    with Image.open(control.artwork_choice("intro", old_release)) as slide:
+        check("replacing it again uses the newest one, not the first",
+              slide.getpixel((10, 10))[:3], (0, 0, 200))
+    control.remove_artwork("intro")
+    check("removing the slide means no opening slide at all",
+          control.artwork_choice("intro", old_release), "")
+    check("…and the replaced one is gone from this computer",
+          control.saved_artwork("intro"), "")
+    control.save_artwork("intro", first)
+    check_that("adding a slide after removing one uses it again",
+               control.artwork_choice("intro", old_release) == control.saved_artwork("intro"))
+    control.forget_artwork("intro")
+    control.set_artwork_off("intro", False)
+    check("putting back the original uses the app's own again",
+          control.artwork_choice("intro", old_release), old_release)
+
+    # Keys: a key saved here wins; replacing it uses the newest; forgetting
+    # it goes back to the group's.
+    control.save_key("GEMINI_API_KEY", "AIza-mine-1")
+    control.save_key("GEMINI_API_KEY", "AIza-mine-2")
+    check("a replaced key is the one used", control.saved_keys().get("GEMINI_API_KEY"),
+          "AIza-mine-2")
+    control.forget_saved_keys()
+    check("going back to the shared keys leaves none of one's own",
+          control.saved_keys(), {})
 
     keys = {"GEMINI_API_KEY": "AIza-test-not-real", "GROQ_API_KEY": "gsk_test_not_real"}
     masked = control.mask_keys(keys)

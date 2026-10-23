@@ -45,8 +45,39 @@ jobs:
           name: download-windows
           path: dist/*.zip
 
-  draft:
+  # Each download opened the way a person would, on the computer it is for,
+  # before anything is published.
+  try:
     needs: [mac, windows]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            artifact: download-macos-15
+          - runner: macos-15-intel
+            artifact: download-macos-15-intel
+          - runner: windows-latest
+            artifact: download-windows
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: ${{ matrix.artifact }}
+          path: zip
+      - name: Open it like a person would
+        shell: bash
+        run: |
+          mkdir unpacked
+          if [ "$RUNNER_OS" = "macOS" ]; then ditto -x -k zip/*.zip unpacked; else
+            powershell -Command "Expand-Archive -Path (Get-ChildItem zip/*.zip).FullName -DestinationPath unpacked"; fi
+          if [ "$RUNNER_OS" = "macOS" ]; then python3 tests/try_download.py unpacked; else
+            python tests/try_download.py unpacked; fi
+
+  draft:
+    needs: [mac, windows, try]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
