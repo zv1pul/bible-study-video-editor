@@ -35,10 +35,18 @@ The **Release** workflow runs every check again, builds the three downloads —
 Mac (Apple Silicon), Mac (Intel), Windows — each of which checks itself before
 it is zipped, and creates a **draft** release.
 
-## 4. Publish — by hand
+## 4. Publish — only once it's been agreed
 
-Open the draft under Releases, look it over, press **Publish**. From then on
-the "latest release" link gives people the new version.
+Write the notes people will read in `docs/release-notes/v1.3.0.md`, then
+either open the draft under Releases and press **Publish**, or push a
+publish tag (this checks the draft has all three downloads, sets the notes,
+and publishes it):
+
+```bash
+git tag publish-v1.3.0 && git push origin publish-v1.3.0
+```
+
+From then on the "latest release" link gives people the new version.
 
 ## 5. Tell installed copies — by hand
 

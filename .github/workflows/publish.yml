@@ -1,0 +1,34 @@
+# Publishes a release that Release built as a draft, with its notes from
+# docs/release-notes/<version>.md. Started by pushing a tag named
+# publish-v<version> — so a release can be made public from any computer
+# that can push to the repository, once someone has said it should be.
+name: Publish
+
+on:
+  push:
+    tags: ["publish-v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Publish the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#publish-}"
+          gh release view "$version" --json isDraft,assets \
+            --jq '"draft: \(.isDraft), downloads: \(.assets | length)"'
+          count=$(gh release view "$version" --json assets --jq '.assets | length')
+          if [ "$count" -lt 3 ]; then
+            echo "::error title=Not published::$version has $count downloads, expected 3"
+            exit 1
+          fi
+          gh release edit "$version" --draft=false --latest \
+            --title "Bible Study Video Editor ${version#v}" \
+            --notes-file "docs/release-notes/$version.md"
+          gh release view "$version" --json isDraft,url --jq '"published: \(.isDraft | not) \(.url)"'
