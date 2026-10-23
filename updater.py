@@ -38,9 +38,9 @@ import control
 
 # What an update may replace. Python and FFmpeg are not on the list: they
 # belong to the download and change only with a new download.
-APP_FILES = ("app.py", "control.py", "control.json", "editor.py", "matcher.py",
-             "selfcheck.py", "transcriber.py", "updater.py", "verifier.py",
-             "requirements.txt")
+APP_FILES = ("app.py", "assistant.py", "control.py", "control.json", "editor.py",
+             "matcher.py", "reviewer.py", "selfcheck.py", "transcriber.py", "updater.py",
+             "verifier.py", "requirements.txt")
 APP_DIRS = ("assets", "fonts", "tests", ".streamlit")
 DOWNLOAD_TIMEOUT = 120
 

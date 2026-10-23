@@ -10,6 +10,9 @@ python tests/test_units.py                  # seconds, no API key
 python selfcheck.py                         # the app page, a test render, sound decoding
 python tests/test_updater.py                # updates install, or are refused, or roll back
 python tests/run_long_countdown.py          # a 3-minute countdown renders at the right length
+python tests/test_app_flows.py              # the page itself: a whole lesson and the usual mistakes
+python tests/test_assistant.py              # the helper's safety rails
+python tests/test_review.py                 # the check of a finished video, right and wrong
 python tests/build_corpus.py /tmp/corpus && python tests/run_corpus.py /tmp/corpus gemini
 python tests/build_formats.py /tmp/formats && python tests/run_formats.py /tmp/formats
 ```
@@ -92,3 +95,16 @@ installed copy within the hour, with no new download.
   Paste the output as `"shared_keys"` in `control.json`, commit, push.
 - **To switch them off**: set `"shared_keys": ""`. Copies then match by
   keywords, or use a key somebody saved under More settings → AI keys.
+
+## Switching an extra off for everybody
+
+The helper, the check of finished videos and the report button can each be
+turned off for every installed copy, within the hour, without a release —
+in `control.json`:
+
+```json
+"settings": {"assistant": false, "review": false, "report": false}
+```
+
+To have **Report a problem** offer an email link, set `"report_email"` in
+`control.json` to the address reports should go to.

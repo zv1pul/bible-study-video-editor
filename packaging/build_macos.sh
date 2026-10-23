@@ -55,8 +55,8 @@ cp packaging/Info.plist "$APP/Contents/Info.plist"
 cp packaging/launch "$APP/Contents/MacOS/launch"
 chmod +x "$APP/Contents/MacOS/launch"
 # The same list of files an update replaces (updater.APP_FILES / APP_DIRS).
-for f in app.py control.py control.json editor.py matcher.py selfcheck.py \
-         transcriber.py updater.py verifier.py requirements.txt; do
+for f in app.py assistant.py control.py control.json editor.py matcher.py reviewer.py \
+         selfcheck.py transcriber.py updater.py verifier.py requirements.txt; do
   cp "$f" "$APP/Contents/Resources/app/"
 done
 mkdir -p "$APP/Contents/Resources/app/tests"

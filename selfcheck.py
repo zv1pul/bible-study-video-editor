@@ -247,6 +247,18 @@ def _artwork() -> Result:
     return "Artwork and font", True, "Intro, outro, logo and font present." + extra
 
 
+def _extras() -> Result:
+    """The helper and the check of finished videos are present and load."""
+    try:
+        import assistant  # noqa: F401
+        import reviewer  # noqa: F401
+    except Exception as exc:
+        return ("Helper and video check", False,
+                f"Couldn't load ({type(exc).__name__}: {exc}). Videos still work; "
+                "these two extras won't appear.")
+    return "Helper and video check", True, "Ready."
+
+
 def _disk() -> Result:
     import transcriber
 
@@ -267,6 +279,7 @@ CHECKS: List[Tuple[str, Callable[[], Result]]] = [
     ("Speech engine", _speech_engine),
     ("AI key", _ai_key),
     ("Artwork and font", _artwork),
+    ("Helper and video check", _extras),
     ("Free space", _disk),
 ]
 
@@ -302,7 +315,7 @@ def all_passed(results: List[Result]) -> bool:
 # Run before an update is allowed in: everything that proves the code
 # works, nothing that depends on the network or on this person's settings.
 UPDATE_GATE = ("App starts", "Accuracy checks", "Video engine", "Speech engine",
-               "Artwork and font")
+               "Artwork and font", "Helper and video check")
 
 
 if __name__ == "__main__":

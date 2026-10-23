@@ -78,14 +78,27 @@ for name, outline in outlines.items():
             if b.start_time < limit - 0.01:
                 overlaps.append((a.type, b.type, round(limit - b.start_time, 1)))
         summ = verifier.summarise(vs)
-        ok = not overlaps and abs(got - expected) < 1.5
+        # The check people get after every render must not cry wolf on a
+        # video that is right: no "problem" on any test lesson.
+        import reviewer
+        found = reviewer.review(reviewer.Plan(
+            output_path=out, cues=editor.schedule_cues(cues, dur, 8.0), duration=dur,
+            intro_path=os.path.join(ROOT, "assets", "intro.png"),
+            outro_path=os.path.join(ROOT, "assets", "outro.png"), bookend_seconds=5.0,
+            rows=[{"Show": True, "Point": e.text} for e in cards]), segs)
+        alarms = [f.title for f in found if f.level == reviewer.PROBLEM]
+        checks = [f.title for f in found if f.level == reviewer.CHECK]
+        ok = not overlaps and abs(got - expected) < 1.5 and not alarms
         failures += not ok
         cuts = ", ".join(f"{T.format_timestamp(e.cut_start)}->{T.format_timestamp(e.cut_end)}"
                          for e in apps if e.cut_end > e.cut_start) or "none"
         print(f"  {'OK ' if ok else 'BAD'} {name:<24} v{summ['verified']}/r{summ['review']}/x{summ['rejected']} "
               f"of {len(pts)}  {dur:.1f}s -> {got:.1f}s (exp {expected:.1f})  cuts: {cuts}  "
-              f"{'OVERLAP ' + str(overlaps) if overlaps else ''}{round(time.time() - t0)}s")
-        os.remove(out)
+              f"{'OVERLAP ' + str(overlaps) if overlaps else ''}{round(time.time() - t0)}s"
+              f"{'  PROBLEMS ' + str(alarms) if alarms else ''}"
+              f"{'  (to check: ' + '; '.join(checks) + ')' if checks else ''}")
+        if os.environ.get("KEEP_OUT"): print("   ", [(f.level, f.title, f.detail[:200]) for f in found if f.level != "ok"])
+        else: os.remove(out)
         if not ok and os.environ.get("GITHUB_ACTIONS"):
             print(f"::error title=Test lesson {name}::length {got:.1f}s, expected {expected:.1f}s, "
                   f"overlaps {overlaps}")

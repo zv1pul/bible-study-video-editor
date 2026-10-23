@@ -22,6 +22,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
+# Everything the app saves while being tested goes to a temporary folder,
+# not into the project (transcripts and AI answers are cached on first import).
+os.environ.setdefault("BSVE_HOME", tempfile.mkdtemp(prefix="bsve_flows_first_"))
+
 from transcriber import ffmpeg_exe  # noqa: E402
 
 PASSED, FAILED = [], []
@@ -91,7 +95,7 @@ def page(home: str, output: str, ai: bool = False):
 
     os.environ.update({
         "BSVE_HOME": home, "BSVE_OUTPUT_DIR": output, "BSVE_NO_AI": "1",
-        "BSVE_SKIP_AUTO_SELFCHECK": "1",
+        "BSVE_SKIP_AUTO_SELFCHECK": "1", "BSVE_REPORT_DIR": os.path.join(home, "reports"),
     })
     if ai:
         os.environ.pop("BSVE_NO_AI")
@@ -280,6 +284,65 @@ try:
                   texts(at)[-400:])
             check("…named after the lesson title (a colon can't be in a file name)",
                   "Exodus 14- Lesson 1 - captioned.mp4" in made, made)
+
+            check("…and the finished video is checked straight away",
+                  any("6 · Check the finished video" in h.value for h in at.subheader)
+                  and (any("checks out" in m.value or "worth a look" in m.value
+                           or "problem" in m.value for m in list(at.success) + list(at.warning))),
+                  texts(at)[-400:])
+
+            # The helper: a stand-in answer, so no allowance is spent.
+            import assistant as _assistant
+
+            def _fake_call(provider, model, key, prompt, timeout):
+                return json.dumps({"answer": "Moved it 2 seconds later.",
+                                   "changes": [{"op": "move", "point": 2, "start": 9.0},
+                                               {"op": "delete_everything"},
+                                               {"op": "move", "point": 99, "start": 1}]})
+            _real_call = _assistant._call
+            _assistant._call = _fake_call
+            os.environ.pop("BSVE_NO_AI")
+            try:
+                labels = [b.label for b in at.button]
+                at.text_input[[t.label for t in at.text_input].index(
+                    "Your question or change")].input("Show the takeaway at 9 seconds").run()
+                at.button[[b.label for b in at.button].index("Send")].click().run()
+                no_crash("asking the helper works", at)
+                check("…its answer is shown, with only the allowed change proposed",
+                      any("Proposed changes" in m.value for m in at.markdown)
+                      and sum("Card “" in m.value for m in at.markdown) == 1,
+                      [m.value for m in at.markdown if "Card" in m.value or "Proposed" in m.value])
+                at.button(key="apply_changes").click().run()
+                no_crash("applying the helper's change works", at)
+                check("…and nothing is applied until Apply is pressed, then Undo is offered",
+                      any(b.label.startswith("↩️") for b in at.button))
+                at.button(key="undo_changes").click().run()
+                no_crash("undo works", at)
+            finally:
+                _assistant._call = _real_call
+                os.environ["BSVE_NO_AI"] = "1"
+
+            # A report: made, and never holding a key.
+            import control as _ctl
+            _ctl._STATE_DIR = os.path.join(home, ".state")
+            _ctl.save_key("GEMINI_API_KEY", "AIza-a-secret-that-must-not-leak")
+            at.button(key="make_report").click().run()
+            no_crash("making a report works", at)
+            reports = os.listdir(os.path.join(home, "reports")) \
+                if os.path.isdir(os.path.join(home, "reports")) else []
+            check("…a report file is made", len(reports) == 1, reports)
+            if reports:
+                import zipfile
+                with zipfile.ZipFile(os.path.join(home, "reports", reports[0])) as bundle:
+                    body = " ".join(bundle.read(n).decode("utf-8", "replace")
+                                    for n in bundle.namelist())
+                    report = json.loads(bundle.read("report.json"))
+                check("…without any key in it",
+                      "AIza-a-secret-that-must-not-leak" not in body
+                      and "keys" not in report.get("settings", {}))
+                check("…holding what's needed to find the problem",
+                      report.get("version") and report.get("timings") and "checks" in report)
+            _ctl.forget_saved_keys()
 
             labels = [b.label for b in at.button]
             at.button[labels.index("➕  Start the next video")].click().run()

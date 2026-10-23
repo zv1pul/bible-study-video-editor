@@ -32,6 +32,25 @@ import matcher
 import transcriber
 import verifier
 
+# The helper, the video check and reports are extras: if one of them can't
+# even load, the rest of the app must carry on exactly as before.
+try:
+    import assistant
+    import reviewer
+    EXTRAS = True
+except Exception:                                    # pragma: no cover
+    EXTRAS = False
+
+
+def extra_on(name: str) -> bool:
+    """An extra is on unless it's missing, or switched off in control.json."""
+    if not EXTRAS:
+        return False
+    try:
+        return control.fetch_control().get("settings", {}).get(name, True) is not False
+    except Exception:
+        return True
+
 # --------------------------------------------------------------------------
 # Page setup
 # --------------------------------------------------------------------------
@@ -416,6 +435,259 @@ def pick_video_file() -> tuple:
         pass
     return "", ("The file window couldn't be opened here — paste where the "
                 "video is in the box below instead.")
+
+
+def apply_changes(changes: list, records: list) -> None:
+    """
+    Apply approved changes from the helper or a fix to the plan — never to a
+    file. The table's current values (including anything typed into it) are
+    taken over first, so nothing the person did by hand is lost, and the
+    whole plan is kept so Undo can put it back exactly.
+    """
+    import copy
+
+    table = [v for v in st.session_state.verdicts or [] if v.match.type != "lower_third"]
+    overrides = st.session_state.setdefault("row_overrides", {})
+    st.session_state.undo_plan = {
+        "matches": [copy.deepcopy(v.match) for v in table],
+        "overrides": copy.deepcopy(overrides),
+        "ends": st.session_state.get("recording_ends"),
+    }
+    for i, row in enumerate(records[:len(table)]):
+        match = table[i].match
+        try:
+            match.start_time = float(row.get("Start (s)", match.start_time))
+            match.end_time = float(row.get("End (s)", match.end_time))
+        except (TypeError, ValueError):
+            pass
+        match.header = str(row.get("Header") or match.header or "")
+        match.has_timer = bool(row.get("Timer", match.has_timer))
+        overrides[i] = {"Show": bool(row.get("Show", True)),
+                        "Discussion (s)": str(row.get("Discussion (s)") or "")}
+    duration = float((st.session_state.video_info or {}).get("duration") or 0.0)
+    for change in changes:
+        op = change.get("op")
+        i = int(change.get("point") or 0) - 1
+        match = table[i].match if 0 <= i < len(table) else None
+        if op == "move" and match:
+            if "start" in change:
+                length = max(match.end_time - match.start_time, 1.0)
+                match.start_time = change["start"]
+                if "end" not in change and match.end_time <= match.start_time:
+                    match.end_time = min(match.start_time + length, duration or 1e9)
+            if "end" in change and change["end"] > match.start_time:
+                match.end_time = change["end"]
+        elif op == "show" and match:
+            overrides.setdefault(i, {})["Show"] = bool(change["value"])
+        elif op == "timer" and match:
+            match.has_timer = bool(change["value"])
+        elif op == "countdown" and match:
+            match.has_timer = True
+            overrides.setdefault(i, {})["Discussion (s)"] = str(int(change["seconds"]))
+        elif op == "resume" and match:
+            pause = match.pause_at or match.end_time
+            if change["at"] > pause + 0.5:
+                match.cut_start = pause
+                match.cut_end = change["at"]
+        elif op == "header" and match:
+            match.header = change["text"]
+        elif op == "trim":
+            start, end = st.session_state.get("recording_ends") or (0.0, duration)
+            if "start" in change and change["start"] < end:
+                start = change["start"]
+            if "end" in change and change["end"] > start:
+                end = change["end"]
+            st.session_state.recording_ends = (start, end)
+            st.session_state.pref_trim_ends = True
+        elif op == "setting":
+            st.session_state[f"pref_{change['name']}"] = change["value"]
+    st.session_state.table_rev = st.session_state.get("table_rev", 0) + 1
+    st.session_state.pending_changes = []
+    st.session_state.changed_since_render = True
+
+
+def undo_changes() -> None:
+    """Put the plan back as it was before the last changes were applied."""
+    saved = st.session_state.pop("undo_plan", None)
+    if not saved:
+        return
+    table = [v for v in st.session_state.verdicts or [] if v.match.type != "lower_third"]
+    for verdict, match in zip(table, saved["matches"]):
+        verdict.match = match
+    st.session_state.row_overrides = saved["overrides"]
+    st.session_state.recording_ends = saved["ends"]
+    st.session_state.table_rev = st.session_state.get("table_rev", 0) + 1
+
+
+def helper_panel(records: list, duration: float) -> None:
+    """Questions and changes in plain words, every change approved first."""
+    talking = bool(st.session_state.get("chat") or st.session_state.get("pending_changes")
+                   or st.session_state.get("undo_plan"))
+    with st.expander("💬 Ask the helper — questions, or changes in plain words",
+                     expanded=talking):
+        left = assistant.left_today()
+        st.caption(
+            "Ask anything about this lesson or the app — or ask for a change, like "
+            "“show the first principle 5 seconds later” or “make question 2's "
+            "countdown 45 seconds”. Nothing changes until you press **Apply**. "
+            f"({left} of {assistant.DAILY_LIMIT} questions left today on this computer.)"
+        )
+        history = st.session_state.setdefault("chat", [])
+        for question, answer in history[-6:]:
+            with st.chat_message("user"):
+                st.write(question)
+            with st.chat_message("assistant"):
+                st.write(answer)
+
+        pending = st.session_state.get("pending_changes") or []
+        if pending:
+            with st.container(border=True):
+                st.markdown("**Proposed changes**")
+                for change in pending:
+                    st.markdown(f"- {assistant.describe(change, records)}")
+                columns = st.columns(2)
+                columns[0].button("✅ Apply", type="primary", width="stretch",
+                                  key="apply_changes", on_click=apply_changes,
+                                  args=(pending, records))
+                columns[1].button("Discard", width="stretch", key="discard_changes",
+                                  on_click=lambda: st.session_state.update(pending_changes=[]))
+        if st.session_state.get("undo_plan"):
+            st.button("↩️ Undo the last changes", key="undo_changes", on_click=undo_changes)
+
+        quick = st.columns(2)
+        preset = ""
+        if quick[0].button("Look over the timings for problems", width="stretch",
+                           key="helper_look"):
+            preset = ("Look over the timings and the checks for anything that seems wrong, "
+                      "and explain it simply. Don't change anything — just tell me what to "
+                      "look at.")
+        if quick[1].button("What do the statuses mean?", width="stretch", key="helper_status"):
+            preset = "What do the statuses in the timings table mean, and what should I check?"
+        with st.form("helper_form", clear_on_submit=True, border=False):
+            typed = st.text_input("Your question or change", max_chars=assistant.MAX_QUESTION_CHARS,
+                                  label_visibility="collapsed",
+                                  placeholder="e.g. Why is the second principle marked worth a look?")
+            sent = st.form_submit_button("Send", width="stretch")
+        question = preset or (typed if sent else "")
+        if question:
+            review = st.session_state.get("review") or {}
+            findings = [f"{f.level}: {f.title} — {f.detail}"[:240]
+                        for f in review.get("findings", []) if f.level != "ok"]
+            with st.spinner("Thinking…"):
+                reply = assistant.ask(
+                    question, rows=records, duration=duration,
+                    trims=st.session_state.get("recording_ends") or (0.0, duration),
+                    settings={k[5:]: v for k, v in st.session_state.items()
+                              if str(k).startswith("pref_") and isinstance(v, (int, float, str, bool))},
+                    findings=findings, segments=st.session_state.segments or [],
+                    history=history,
+                    keys={"GEMINI_API_KEY": secret("GEMINI_API_KEY"),
+                          "GROQ_API_KEY": secret("GROQ_API_KEY")},
+                )
+            if reply.problem:
+                st.warning(reply.problem)
+            else:
+                history.append((question, reply.answer))
+                st.session_state.pending_changes = reply.changes
+                st.rerun()
+
+
+def review_panel(path: str) -> None:
+    """Check the finished video, and offer the fixes it knows are safe."""
+    record = st.session_state.get("render_record") or {}
+    if record.get("output_path") != path:
+        return
+    st.subheader("6 · Check the finished video")
+    review = st.session_state.get("review")
+    if not review or review.get("path") != path:
+        with st.status("Watching and listening to the finished video…", expanded=False) as box:
+            plan = reviewer.Plan(**record)
+            with stay_awake():
+                findings = reviewer.review(plan, st.session_state.segments or [],
+                                           progress_cb=lambda m: box.update(label=m))
+            review = {"path": path, "findings": findings}
+            st.session_state.review = review
+            box.update(label="Checked the finished video", state="complete")
+    findings = review["findings"]
+    problems = [f for f in findings if f.level != reviewer.OK]
+    (st.success if not problems else st.warning)(reviewer.summary(findings))
+    for index, finding in enumerate(problems):
+        with st.container(border=True):
+            where = (f" · at {transcriber.format_timestamp(finding.at)} in the video"
+                     if finding.at >= 0 else "")
+            st.markdown(f"{reviewer.LEVEL_ICON[finding.level]} **{finding.title}**{where}")
+            if finding.detail:
+                st.caption(finding.detail)
+            if finding.fix and finding.fix.get("row") is not None:
+                change = {"op": finding.fix["op"], "point": finding.fix["row"] + 1,
+                          "at": finding.fix["at"]}
+                st.button(f"🔧 {finding.fix_label}", key=f"fix_{index}",
+                          on_click=apply_changes,
+                          args=([change], st.session_state.get("last_rows") or []))
+    with st.expander(f"Everything that checked out ({len(findings) - len(problems)})"):
+        for finding in findings:
+            if finding.level == reviewer.OK:
+                st.caption(f"✅ {finding.title}" + (f" — {finding.detail}" if finding.detail else ""))
+    if st.session_state.get("changed_since_render"):
+        st.info("The changes are in the timings above. Press **Render final video** again — the "
+                "new video is saved alongside this one, so nothing is lost.")
+
+
+def report_panel() -> None:
+    """A file to send when something goes wrong — never the video or a key."""
+    with st.expander("🐞 Report a problem"):
+        st.caption(
+            "Makes a small file describing what happened — the settings, the outline "
+            "and timings, the checks and any error. It never includes the video or "
+            "any key. Send it to whoever gave you the app."
+        )
+        include = st.checkbox("Include the transcript (helps find the problem faster)",
+                              value=True, key="report_transcript")
+        if st.button("Make the report file", width="stretch", key="make_report"):
+            try:
+                review = st.session_state.get("review") or {}
+                info = st.session_state.get("video_info") or {}
+                state = {
+                    "recording": {k: info.get(k) for k in ("duration", "size", "fps", "has_audio")},
+                    "outline": {str(k): v for k, v in st.session_state.items()
+                                if str(k) in ("takeaway_box", "divisions_box", "lesson_title_box")
+                                or str(k).startswith(("principles_", "applications_"))},
+                    "timings": st.session_state.get("last_rows") or [],
+                    "trims": st.session_state.get("recording_ends"),
+                    "notes": st.session_state.get("notes") or [],
+                    "checks": [f"{f.level}: {f.title} — {f.detail}" for f in review.get("findings", [])],
+                    "helper": st.session_state.get("chat", [])[-10:],
+                    "error": st.session_state.get("last_error", ""),
+                    "transcript": transcriber.segments_to_text(st.session_state.get("segments") or []),
+                }
+                folder = os.environ.get("BSVE_REPORT_DIR") or \
+                    os.path.join(os.path.expanduser("~"), "Desktop")
+                try:
+                    os.makedirs(folder, exist_ok=True)
+                except OSError:
+                    pass
+                if not os.path.isdir(folder) or not os.access(folder, os.W_OK):
+                    folder = os.path.expanduser("~")
+                st.session_state.report_path = assistant.make_report(
+                    folder, include_transcript=include, state=state)
+            except Exception as exc:
+                st.error(f"Couldn't make the report: {exc}")
+        made = st.session_state.get("report_path")
+        if made and os.path.exists(made):
+            st.success(f"Saved as **{os.path.basename(made)}** in "
+                       f"{os.path.basename(os.path.dirname(made)) or 'your home folder'}")
+            address = str(control.fetch_control().get("report_email") or "").strip()
+            if address:
+                from urllib.parse import quote
+
+                st.markdown(
+                    f"[✉️ Write the email]({'mailto:' + address + '?subject=' + quote('Video editor problem') + '&body=' + quote('The report file is attached. What happened: ')})"
+                    " — then attach the file.")
+            if sys.platform == "darwin" and st.button("Show it in Finder", key="report_reveal"):
+                subprocess.run(["open", "-R", made], check=False)
+            elif sys.platform.startswith("win") and st.button("Show it in Explorer",
+                                                              key="report_reveal"):
+                subprocess.run(["explorer", "/select,", made], check=False)
 
 
 # --------------------------------------------------------------------------
@@ -805,6 +1077,12 @@ with st.sidebar:
         except Exception:
             pass
         os._exit(0)
+
+    if extra_on("report"):
+        try:
+            report_panel()
+        except Exception:
+            pass
 
     with st.expander("Privacy"):
         _reporting = st.toggle(
@@ -1600,6 +1878,7 @@ if st.button("🔍 Analyse recording", type="primary", disabled=not ready, width
                    "add your own free key under **More settings → AI keys**.")
             )
         else:
+            st.session_state.last_error = traceback.format_exc()[-3000:]
             st.error(f"Something went wrong: {exc}")
         with st.expander("Technical details"):
             st.code(traceback.format_exc())
@@ -1666,12 +1945,14 @@ if st.session_state.verdicts:
                 st.caption(note)
 
     duration = (info or {}).get("duration", 0.0)
+    table_verdicts = [v for v in verdicts if v.match.type != "lower_third"]
+    _overrides = st.session_state.setdefault("row_overrides", {})
     frame = pd.DataFrame(
         [
             {
                 # Anything that failed verification starts switched OFF, so a
                 # bad placement cannot reach the video by inattention.
-                "Show": v.verdict != verifier.REJECTED,
+                "Show": _overrides.get(i, {}).get("Show", v.verdict != verifier.REJECTED),
                 "Status": verifier.VERDICT_LABEL[v.verdict],
                 "Header": v.match.header or v.match.category,
                 "Point": v.match.text,
@@ -1683,7 +1964,7 @@ if st.session_state.verdicts:
                 "Timer": bool(v.match.has_timer),
                 # Every application gets the sidebar's discussion time unless
                 # a different number is typed here for that one question.
-                "Discussion (s)": (
+                "Discussion (s)": _overrides.get(i, {}).get("Discussion (s)") or (
                     f"{int(discussion_seconds)}" if v.match.type == "application"
                     else ""                     # blank for anything that is not a question
                 ),
@@ -1696,8 +1977,7 @@ if st.session_state.verdicts:
                 "Heard": v.match.evidence,
                 "Why": v.reason_text,
             }
-            for v in verdicts
-            if v.match.type != "lower_third"
+            for i, v in enumerate(table_verdicts)
         ]
     )
 
@@ -1762,13 +2042,19 @@ if st.session_state.verdicts:
             "Heard": st.column_config.TextColumn("What the speaker said", disabled=True),
             "Why": st.column_config.TextColumn("Checks", disabled=True, width="medium"),
         },
-        key="matches_editor",
+        key=f"matches_editor_{st.session_state.get('table_rev', 0)}",
     )
 
     requested = cues_from_table(
         edited, {v.match.text: v.match for v in verdicts},
         float(discussion_seconds), float(caption_seconds),
     )
+    _records = edited.to_dict("records")
+    for _i, _row in enumerate(_records):
+        _m = table_verdicts[_i].match if _i < len(table_verdicts) else None
+        if _m is not None and _m.cut_end > _m.cut_start:
+            _row["_resume"] = float(_m.cut_end)
+    st.session_state.last_rows = _records
 
     # The real schedule: overlaps trimmed, points matched to the same moment
     # queued one after another, anything past the end of the video dropped.
@@ -1827,6 +2113,12 @@ if st.session_state.verdicts:
                 st.image(image, width="stretch")
             except Exception as exc:
                 st.warning(f"Could not build a preview frame: {exc}")
+
+    if extra_on("assistant"):
+        try:
+            helper_panel(_records, duration)
+        except Exception as _exc:                       # never let it break the page
+            st.caption(f"The helper isn't available right now ({type(_exc).__name__}).")
 
     with st.expander("📝 Full transcript"):
         text = transcriber.segments_to_text(st.session_state.segments or [])
@@ -1966,6 +2258,16 @@ if st.session_state.verdicts:
                 )
                 st.session_state.output_path = output_path
                 st.session_state.render_seconds = time.time() - started
+                st.session_state.render_record = {
+                    "output_path": output_path, "cues": cues, "duration": duration,
+                    "keep_from": keep_from,
+                    "keep_to": keep_to if duration and keep_to < duration else 0.0,
+                    "intro_path": intro_path or "", "outro_path": outro_path or "",
+                    "bookend_seconds": float(bookend_seconds), "card_style": card_style,
+                    "rows": _records, "language": (language.strip() or "en"),
+                }
+                st.session_state.pop("review", None)
+                st.session_state.changed_since_render = False
                 if final_length > 120 and st.session_state.render_seconds > 5:
                     control.set_pref("render_rate", round(
                         final_length / st.session_state.render_seconds, 2))
@@ -1984,6 +2286,7 @@ if st.session_state.verdicts:
             # Something on this computer may have changed since it was last
             # checked; look again before the next attempt.
             control.set_setting("self_check_version", "")
+            st.session_state.last_error = traceback.format_exc()[-3000:]
             st.error(f"Rendering failed: {exc}\n\nThe app will check this "
                      "computer the next time the page loads — press **Check "
                      "this computer** in the sidebar to do it now.")
@@ -2114,7 +2417,9 @@ def start_next_video() -> None:
     st.session_state.speaker_pick = "— Someone new —"
     for key, value in DEFAULTS.items():
         st.session_state[key] = value
-    for key in ("source_name", "saved_copies", "video_upload"):
+    for key in ("source_name", "saved_copies", "video_upload", "chat", "pending_changes",
+                "undo_plan", "row_overrides", "table_rev", "review", "render_record",
+                "last_rows", "last_error", "report_path"):
         st.session_state.pop(key, None)
 
 
@@ -2165,6 +2470,12 @@ if st.session_state.output_path and os.path.exists(st.session_state.output_path)
         st.button("➕  Start the next video", width="stretch", on_click=start_next_video,
                   help="Clears the recording, outline and timings. Your settings, "
                        "slides and speakers stay as they are.")
+        if extra_on("review"):
+            try:
+                review_panel(path)
+            except Exception as _exc:                   # never let it break the page
+                st.caption(f"The video check couldn't run this time ({type(_exc).__name__}). "
+                           "The video itself is fine and saved.")
         st.stop()
 
     # Served straight from disk, so the size of the lesson does not matter.

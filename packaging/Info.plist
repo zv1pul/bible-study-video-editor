@@ -5,8 +5,8 @@
   <key>CFBundleName</key><string>Bible Study Video Editor</string>
   <key>CFBundleDisplayName</key><string>Bible Study Video Editor</string>
   <key>CFBundleIdentifier</key><string>org.bsf.biblestudyvideoeditor</string>
-  <key>CFBundleVersion</key><string>1.2.1</string>
-  <key>CFBundleShortVersionString</key><string>1.2.1</string>
+  <key>CFBundleVersion</key><string>1.3.0</string>
+  <key>CFBundleShortVersionString</key><string>1.3.0</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleExecutable</key><string>launch</string>
   <key>CFBundleIconFile</key><string>appicon</string>

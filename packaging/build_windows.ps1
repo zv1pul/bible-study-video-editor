@@ -39,8 +39,9 @@ Remove-Item -Recurse -Force "$SP\pip", "$SP\setuptools", "$SP\pkg_resources" -Er
 Write-Host "==> Assembling"
 New-Item -ItemType Directory -Force -Path "$Out\app\tests" | Out-Null
 # The same list of files an update replaces (updater.APP_FILES / APP_DIRS).
-foreach ($f in @("app.py", "control.py", "control.json", "editor.py", "matcher.py",
-                 "selfcheck.py", "transcriber.py", "updater.py", "verifier.py", "requirements.txt")) {
+foreach ($f in @("app.py", "assistant.py", "control.py", "control.json", "editor.py",
+                 "matcher.py", "reviewer.py", "selfcheck.py", "transcriber.py", "updater.py",
+                 "verifier.py", "requirements.txt")) {
   Copy-Item $f "$Out\app\"
 }
 Copy-Item "tests\test_units.py" "$Out\app\tests\"

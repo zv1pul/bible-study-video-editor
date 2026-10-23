@@ -32,6 +32,10 @@ jobs:
         run: python tests/run_long_countdown.py
       - name: Using the app — a whole lesson, and the mistakes people make
         run: python tests/test_app_flows.py
+      - name: The helper's safety rails
+        run: python tests/test_assistant.py
+      - name: Checking a finished video — one made right, and ones made wrong
+        run: python tests/test_review.py
       - name: Test lessons — transcribe, match, verify, lay out and render eight lessons
         run: |
           python tests/build_corpus.py "$RUNNER_TEMP/corpus"
@@ -61,6 +65,10 @@ jobs:
         run: python tests/run_long_countdown.py
       - name: Using the app — a whole lesson, and the mistakes people make
         run: python tests/test_app_flows.py
+      - name: The helper's safety rails
+        run: python tests/test_assistant.py
+      - name: Checking a finished video — one made right, and ones made wrong
+        run: python tests/test_review.py
 
   windows:
     runs-on: windows-latest
@@ -82,6 +90,10 @@ jobs:
         run: python tests/run_long_countdown.py
       - name: Using the app — a whole lesson, and the mistakes people make
         run: python tests/test_app_flows.py
+      - name: The helper's safety rails
+        run: python tests/test_assistant.py
+      - name: Checking a finished video — one made right, and ones made wrong
+        run: python tests/test_review.py
       - name: The "Choose the video" window can be built
         run: |
           python -c "import ast,subprocess,sys; src=open('app.py',encoding='utf-8').read(); tree=ast.parse(src); ns={'VIDEO_EXTENSIONS':('mp4','mov')}; fn=[n for n in tree.body if getattr(n,'name','')=='windows_picker_command'][0]; exec(compile(ast.Module([fn],[]),'app.py','exec'),ns); out=subprocess.run(ns['windows_picker_command'](show=False),capture_output=True,text=True); print(out.stdout, out.stderr); sys.exit(0 if 'PICKER READY' in out.stdout else 1)"

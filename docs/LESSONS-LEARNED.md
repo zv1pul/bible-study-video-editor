@@ -169,6 +169,35 @@ technical columns unless asked for, retries kept "behind the scenes", and a
 | Nothing tested the page itself, or the downloads as people get them | `tests/test_app_flows.py` drives the real page — a whole lesson, presets, paste, slides, settings across restarts, wrong files, bad links, damaged settings — on Apple Silicon, Intel and Windows for every change. `tests/try_download.py` opens each finished download on its own kind of computer before a release is published (and `verify-v*` tags re-test a published one) |
 | An Intel Mac library went missing at release time | Intel Macs are in the checks for every change |
 
+## The video checks itself, and a helper (version 1.3)
+
+Every check that was done by hand on the real lessons — measuring the
+finished file, looking at the slides and cards, and above all listening to
+what comes just before and just after each countdown — now runs after every
+render (`reviewer.py`). It was tried first on lessons made to go wrong
+(`tests/test_review.py`) and then on the eight test lessons, where any
+"problem" on a video that is right fails the checks (`tests/run_corpus.py`).
+
+| What testing found | What changed |
+|---|---|
+| A group member speaking clearly near the camera passed the "teacher is back" listen | The teacher's own call back ("All right, brothers…") anywhere after the point the video returns to means it returned too early — that's what catches it |
+| "Let's close in prayer" was taken for a call back | A closing isn't a call back |
+| A principle read straight after other speech wasn't seen inside a cut | The words inside each cut are compared directly |
+| Short sentences and pauses were called "came back too early" | Only unclear talk (a room) or a later call back counts; a quiet stretch after a countdown is its own finding, with a fix |
+| "Doesn't end with a prayer" was flagged on every lesson without one | Only an unclear or talky ending is flagged |
+| The helper's light model picked the second question's "So brothers" for the first question | A "come back" must fall between its question and the next point; the moments the teacher calls the room back are listed for it |
+| Ten questions in a minute hit Google's per-minute limit; the backup refused the long transcript | One short wait and retry; the backup gets a shorter transcript |
+| The "look over" button proposed a change nobody asked for | It explains only |
+| The helper's panel closed after each answer | It stays open while there's a conversation or a change waiting |
+| The report fell over when the Desktop couldn't be used | It makes the folder, or uses the home folder |
+
+The helper (`assistant.py`) can only propose a short list of known changes,
+each checked and kept inside the recording, applied only on **Apply** and
+undone with **Undo**; it has its own daily allowance (40 per computer), a
+cooldown, a size limit and a time limit; and it, the check and the report can
+each be switched off for every copy in `control.json` (`"settings":
+{"assistant": false}` and so on).
+
 ---
 
 ## The rules these add up to
