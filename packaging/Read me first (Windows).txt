@@ -32,10 +32,13 @@ Updates install themselves: each one is checked on your computer before
 it is used, and if anything goes wrong the app goes back to the version
 that worked.
 
-To close the app: just close its browser tab — it stops by itself a few
-minutes later (never in the middle of a render). Or press "Quit the app"
-at the bottom of the left-hand panel. Opening it again while it is still
-running simply brings the page back.
+You can leave it in a background tab, or let the computer sleep, even in
+the middle of a video: the page reconnects by itself with all your work.
+If a page ever opens blank, press "Pick up where I left off".
+
+To close the app: press "Quit the app" at the bottom of the left-hand
+panel — or just close its tab; it stops by itself some hours later (never
+during a job). Opening it again while it is running brings the page back.
 
 If anything misbehaves, press "Check this computer" in the left-hand panel —
 it says plainly what's wrong.

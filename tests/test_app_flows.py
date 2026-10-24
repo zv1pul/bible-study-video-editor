@@ -344,8 +344,24 @@ try:
                       report.get("version") and report.get("timings") and "checks" in report)
             _ctl.forget_saved_keys()
 
+            # The browser shut the tab (or the app restarted): a blank page
+            # offers the lesson back, with everything it had.
+            again = page(home, output)
+            check("a page that opens blank offers the last lesson back",
+                  any("Pick up where you left off" in m.value for m in again.markdown))
+            again.button(key="restore_work").click().run()
+            no_crash("picking up where it left off works", again)
+            check("…with the outline, the timings and the finished video back",
+                  again.text_input(key="lesson_title_box").value == "Exodus 14: Lesson 1"
+                  and any("4 · Check the timings" in h.value for h in again.subheader)
+                  and any("6 · Check the finished video" in h.value for h in again.subheader),
+                  [h.value for h in again.subheader])
+
             labels = [b.label for b in at.button]
             at.button[labels.index("➕  Start the next video")].click().run()
+            fresh = page(home, output)
+            check("…but not once the next video has been started",
+                  not any("Pick up where you left off" in m.value for m in fresh.markdown))
             no_crash("Start the next video runs without an error", at)
             check("…and the next lesson starts on a clean page",
                   at.text_area(key="takeaway_box").value == ""

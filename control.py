@@ -35,7 +35,7 @@ from typing import Any, Dict, Optional
 
 import requests
 
-VERSION = "1.3.1"
+VERSION = "1.3.2"
 
 # Where every installed copy looks for instructions. A plain file in the
 # repository: no server to run, no bill, and you change it with a commit.

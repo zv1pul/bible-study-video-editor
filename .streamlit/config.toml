@@ -5,6 +5,10 @@
 # a small server. With it, the browser fetches the file directly and Python
 # never touches the bytes, so size stops mattering.
 enableStaticServing = true
+# A tab that loses its connection — the computer asleep, the browser resting
+# a background tab — reconnects to the same session with all its work, for up
+# to 12 hours (the default is 2 minutes, after which it came back blank).
+disconnectedSessionTTL = 43200
 maxUploadSize = 200           # megabytes.
                               #
                               # Deliberately low. Streamlit holds an upload in

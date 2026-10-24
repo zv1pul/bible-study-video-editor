@@ -287,7 +287,12 @@ def cues_from_table(edited, plans, discussion_seconds: float, caption_seconds: f
     return cues
 
 
-IDLE_QUIT_MINUTES = 5
+# Stop only once nobody has had the page open for a long while. A tab that
+# has lost its connection — the computer asleep, the browser resting a
+# background tab — still counts: the page engine keeps its session (and all
+# the work in it) for half a day (server.disconnectedSessionTTL), and it
+# reconnects on its own when the tab comes back.
+IDLE_QUIT_HOURS = 1
 
 
 @st.cache_resource
@@ -299,12 +304,12 @@ def _activity() -> dict:
 @st.cache_resource
 def _quit_when_closed() -> bool:
     """
-    In the packaged app, stop a few minutes after the last tab is closed.
+    In the packaged app, stop once the page has been gone for a long while.
 
     The app has no window of its own, so without this it would carry on
-    running unseen after somebody closes the browser. Never while a lesson
-    is being analysed or rendered — closing the tab mid-render must not
-    lose the video.
+    running unseen forever. It never stops while a lesson is being analysed
+    or rendered, nor while any tab — even one that has lost its connection
+    to sleep or the browser — still has a session. Time asleep doesn't count.
     """
     if not os.environ.get("BSVE_PACKAGED"):
         return False
@@ -319,14 +324,16 @@ def _quit_when_closed() -> bool:
         while True:
             time.sleep(20)
             try:
-                viewers = Runtime.instance()._session_mgr.num_active_sessions()
+                # Every session, connected or waiting for its tab to come back.
+                viewers = Runtime.instance()._session_mgr.num_sessions()
             except Exception:
                 return                       # can't tell, so never guess
             if viewers or _activity()["busy"]:
                 idle_since = None
                 continue
-            idle_since = idle_since or time.time()
-            if time.time() - idle_since >= IDLE_QUIT_MINUTES * 60:
+            # monotonic: on a Mac it doesn't advance while the computer sleeps.
+            idle_since = idle_since or time.monotonic()
+            if time.monotonic() - idle_since >= IDLE_QUIT_HOURS * 3600:
                 try:
                     os.remove(os.path.join(os.environ.get("BSVE_HOME", ""), "running.json"))
                 except OSError:
@@ -338,6 +345,83 @@ def _quit_when_closed() -> bool:
 
 
 _quit_when_closed()
+
+
+WORK_FILE = "last_lesson.pkl"
+WORK_KEYS = ("video_path", "video_key", "video_info", "segments", "recording_ends",
+             "silences", "fetched_path", "analysed_fingerprint", "matches", "verdicts",
+             "notes", "output_path", "render_seconds", "source_name", "row_overrides",
+             "table_rev", "render_record", "review", "chat", "last_rows", "saved_copies")
+BOX_KEYS = ("takeaway_box", "divisions_box", "scripture_box", "lesson_title_box",
+            "speaker_name_box", "speaker_title_box", "local_path_box", "link_box")
+
+
+def save_work() -> None:
+    """
+    Keep this lesson's work on the computer — after analysing, rendering or
+    changing anything — so a page that ever opens blank (a browser that shut
+    the tab, a restart) can pick up exactly where it was.
+    """
+    import pickle
+
+    try:
+        state = {key: st.session_state.get(key) for key in WORK_KEYS}
+        boxes = {str(k): v for k, v in st.session_state.items()
+                 if str(k) in BOX_KEYS or str(k).startswith(("principles_", "applications_"))}
+        title = (st.session_state.get("lesson_title_box") or st.session_state.get("source_name")
+                 or os.path.basename(state.get("video_path") or "") or "your lesson")
+        path = control._state_path(WORK_FILE)
+        with open(path + ".tmp", "wb") as handle:
+            pickle.dump({"state": state, "boxes": boxes, "title": str(title),
+                         "saved_at": time.time(), "closed": False}, handle)
+        os.replace(path + ".tmp", path)
+    except Exception:
+        pass                                  # saving is a convenience, never a failure
+
+
+def saved_work() -> dict:
+    """The work saved last time, if there's some to go back to."""
+    import pickle
+
+    try:
+        with open(control._state_path(WORK_FILE), "rb") as handle:
+            work = pickle.load(handle)
+        video = (work.get("state") or {}).get("video_path") or ""
+        if work.get("closed") or not video or not os.path.exists(video) \
+                or not work["state"].get("verdicts"):
+            return {}
+        return work
+    except Exception:
+        return {}
+
+
+def restore_work() -> None:
+    """Put the saved lesson back on the page (a button's action)."""
+    work = saved_work()
+    if not work:
+        return
+    for key, value in (work.get("state") or {}).items():
+        if value is not None:
+            st.session_state[key] = value
+    for key, value in (work.get("boxes") or {}).items():
+        st.session_state[key] = value
+    st.session_state.table_rev = st.session_state.get("table_rev", 0) + 1
+    st.session_state.flash = f"Back where you left off: {work.get('title', 'your lesson')}."
+
+
+def close_saved_work() -> None:
+    """The person has moved on: don't offer the old lesson again."""
+    import pickle
+
+    try:
+        path = control._state_path(WORK_FILE)
+        with open(path, "rb") as handle:
+            work = pickle.load(handle)
+        work["closed"] = True
+        with open(path, "wb") as handle:
+            pickle.dump(work, handle)
+    except Exception:
+        pass
 
 
 class stay_awake:
@@ -504,6 +588,7 @@ def apply_changes(changes: list, records: list) -> None:
     st.session_state.table_rev = st.session_state.get("table_rev", 0) + 1
     st.session_state.pending_changes = []
     st.session_state.changed_since_render = True
+    save_work()
 
 
 def undo_changes() -> None:
@@ -517,6 +602,7 @@ def undo_changes() -> None:
     st.session_state.row_overrides = saved["overrides"]
     st.session_state.recording_ends = saved["ends"]
     st.session_state.table_rev = st.session_state.get("table_rev", 0) + 1
+    save_work()
 
 
 def helper_panel(records: list, duration: float) -> None:
@@ -1206,6 +1292,22 @@ if control.settings().get("self_check_problems"):
         + "\n\nFix it and press **Check this computer** in the sidebar."
     )
 
+# A page that opened blank — the browser shut a resting tab, or the app was
+# restarted — offers the last lesson back, with everything it had.
+if not st.session_state.get("video_path") and not st.session_state.get("skip_restore"):
+    _work = saved_work()
+    if _work:
+        with st.container(border=True):
+            st.markdown(
+                f"**Pick up where you left off?** — {_work.get('title', 'your lesson')}, "
+                f"saved {time.strftime('%a %-I:%M %p' if not sys.platform.startswith('win') else '%a %I:%M %p', time.localtime(_work.get('saved_at', 0)))}"
+            )
+            _columns = st.columns(2)
+            _columns[0].button("↩️ Pick up where I left off", type="primary", width="stretch",
+                               on_click=restore_work, key="restore_work")
+            _columns[1].button("Start fresh", width="stretch", key="skip_restore_button",
+                               on_click=lambda: st.session_state.update(skip_restore=True))
+
 # First run: no AI key anywhere yet. One box, a minute's work, and never again.
 if not has_any_key() and not st.session_state.get("skip_key_setup") \
         and not os.environ.get("BSVE_NO_AI"):
@@ -1852,6 +1954,7 @@ if st.button("🔍 Analyse recording", type="primary", disabled=not ready, width
             st.session_state.verdicts = verdicts
             st.session_state.analysed_fingerprint = _fingerprint
             st.session_state.notes = notes
+            save_work()
             bar.progress(1.0)
             status.update(label="Analysis complete", state="complete", expanded=False)
             control.report_async(
@@ -2268,6 +2371,7 @@ if st.session_state.verdicts:
                 }
                 st.session_state.pop("review", None)
                 st.session_state.changed_since_render = False
+                save_work()
                 if final_length > 120 and st.session_state.render_seconds > 5:
                     control.set_pref("render_rate", round(
                         final_length / st.session_state.render_seconds, 2))
@@ -2407,6 +2511,7 @@ LESSON_BOXES = ("takeaway_box", "divisions_box", "scripture_box", "link_box",
 
 def start_next_video() -> None:
     """Clear this lesson so the next one starts on a clean page."""
+    close_saved_work()
     discard_previous_render()
     # Text boxes are emptied by giving them an empty value; simply forgetting
     # them lets the browser hand the old text straight back.

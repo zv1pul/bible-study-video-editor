@@ -198,6 +198,12 @@ cooldown, a size limit and a time limit; and it, the check and the report can
 each be switched off for every copy in `control.json` (`"settings":
 {"assistant": false}` and so on).
 
+## Left in the background (version 1.3.2)
+
+| What happened | Why | What changed |
+|---|---|---|
+| Left open while the laptop slept or the tab sat in the background, the page said it had lost the connection, and refreshing loaded nothing | The app stopped itself 5 minutes after it stopped hearing from its tab — and a sleeping computer or a resting background tab goes quiet just like a closed one. The page engine also forgot a disconnected session after 2 minutes | Sessions are kept 12 hours (`server.disconnectedSessionTTL`), so a tab reconnects with all its work; the app stops only after an hour with no session at all (time asleep doesn't count), never during a job. After every analysis, render or change the work is saved, and a page that opens blank offers **Pick up where I left off** |
+
 ---
 
 ## The rules these add up to
@@ -229,3 +235,5 @@ each be switched off for every copy in `control.json` (`"settings":
 11. **A choice made once stays made.** Every setting, slide, speaker and key a
     person changes is the new default on that computer — through restarts and
     updates — until they change it again, and each can be put back.
+12. **Being away is not leaving.** A sleeping computer or a background tab must
+    never cost anybody their work; anything long-running is saved as it goes.
