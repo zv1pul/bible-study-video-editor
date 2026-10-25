@@ -1,9 +1,9 @@
 {
-  "latest_version": "1.3.1",
+  "latest_version": "1.3.2",
   "minimum_version": "0.0.0",
   "message": "",
   "message_kind": "info",
-  "release_notes": "The app now keeps the same address, so an open tab reconnects by itself — plus the video check, the helper and Report a problem from 1.3.0.",
+  "release_notes": "Leave it in the background: the page now reconnects with all your work after sleep or a background tab, and \"Pick up where I left off\" brings a lesson back.",
   "telemetry_url": "",
   "settings": {},
   "vault_url": "",

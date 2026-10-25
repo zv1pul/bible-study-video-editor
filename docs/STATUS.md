@@ -4,11 +4,11 @@
 
 ## Now
 
-- **Published version: 1.3.1** (2026-10-23) —
+- **Published version: 1.3.2** (2026-10-24) —
   https://github.com/zv1pul/bible-study-video-editor/releases/latest
   (Mac Apple Silicon, Mac Intel, Windows). Older releases removed; their tags kept.
   The app always uses address 47823 (falls back only if something else uses it).
-- `control.json` `latest_version` = 1.3.1, so installed copies offer it.
+- `control.json` `latest_version` = 1.3.2, so installed copies offer it.
 - Every check passes locally and on GitHub (Apple Silicon, Intel, Windows); the
   three published downloads were each opened and checked on their own computer.
 
@@ -22,9 +22,6 @@ render with one-click fixes, the chat helper, Report a problem.
 
 ## Open
 
-- **1.3.2 ready, not yet published** (needs the owner's yes): the app no longer
-  shuts itself down while a tab is asleep or in the background; sessions kept 12 h;
-  "Pick up where I left off". Reaches installed copies as an automatic update.
 
 - **Report email** — `report_email` in `control.json` is empty, so reports are
   saved as a file but not emailed. Needs an address from the owner.
@@ -42,4 +39,5 @@ render with one-click fixes, the chat helper, Report a problem.
 | 2026-10-20 | — | Lesson 7 (Eric, Romans 3:21–26): announced group discussions cut to the call back |
 | 2026-10-23 | 1.2.1 | Paste outline, preset speakers, lesson title, slides one at a time, every setting remembered, page tests on all computers |
 | 2026-10-23 | 1.3.0 | Video check after every render, chat helper, Report a problem |
+| 2026-10-24 | 1.3.2 | Leave it in the background: sessions survive sleep (12 h), no early shutdown, "Pick up where I left off" |
 | 2026-10-23 | 1.3.1 | Always the same address, so an open tab reconnects after a restart/update/sleep (launcher — new download needed) |
