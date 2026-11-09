@@ -22,6 +22,9 @@ render with one-click fixes, the chat helper, Report a problem.
 
 ## Open
 
+- **1.3.3 ready, not yet published** (needs the owner's yes): the group's feedback —
+  minutes:seconds timings, countdown waits for a breath, BSF titles, half verses,
+  tidy wrapping and editable card words. Reaches installed copies as an automatic update.
 
 - **Report email** — `report_email` in `control.json` is empty, so reports are
   saved as a file but not emailed. Needs an address from the owner.

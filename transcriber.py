@@ -1287,6 +1287,44 @@ def format_timestamp(seconds: float) -> str:
     return f"{minutes}:{secs:02d}"
 
 
+def format_clock(seconds: float) -> str:
+    """`M:SS.s` or `H:MM:SS.s` — to the tenth of a second, for editing timings."""
+    tenths = int(round(max(float(seconds or 0.0), 0.0) * 10))
+    whole, tenth = divmod(tenths, 10)
+    hours, remainder = divmod(whole, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}.{tenth}"
+    return f"{minutes}:{secs:02d}.{tenth}"
+
+
+def parse_clock(text) -> Optional[float]:
+    """
+    A time as somebody would type it, in seconds — or None if it can't be read.
+
+        "2:51.3" -> 171.3     "2:51" -> 171.0     "1:02:03.4" -> 3723.4
+        "171.3"  -> 171.3     "  2 : 51 " -> 171.0
+    """
+    if isinstance(text, (int, float)):
+        return float(text) if text == text and text >= 0 else None
+    value = re.sub(r"\s+", "", str(text or ""))
+    if not value:
+        return None
+    parts = value.split(":")
+    if len(parts) > 3:
+        return None
+    try:
+        numbers = [float(part) for part in parts]
+    except ValueError:
+        return None
+    if any(n < 0 for n in numbers) or any(n >= 60 for n in numbers[1:]):
+        return None
+    total = 0.0
+    for number in numbers:
+        total = total * 60 + number
+    return round(total, 2)
+
+
 def segments_to_text(segments: Sequence[Segment]) -> str:
     """Plain transcript for the download button."""
     return "\n".join(

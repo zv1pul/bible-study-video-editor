@@ -482,9 +482,12 @@ def _points_from_structured(outline: dict) -> List[LessonPoint]:
 
 
 # "Romans 3:21–22", "1 John 4:8", "Psalm 23", "EXODUS 20:3", "Song of Songs 2:1"
+# A verse may end in a, b or c — "Romans 4:16a" is the first half of verse 16.
+_VERSE = r"\d{1,3}[a-cA-C]?"
 _REFERENCE = re.compile(
-    r"^\s*(?:[1-3]\s*)?[A-Za-z]+(?:\s+(?:of\s+)?[A-Za-z]+){0,3}\s+\d{1,3}"
-    r"(?:\s*:\s*\d{1,3}(?:\s*[-–—]\s*\d{1,3}(?:\s*:\s*\d{1,3})?)?)?\s*$"
+    r"^\s*\(?\s*(?:[1-3]\s*)?[A-Za-z]+(?:\s+(?:of\s+)?[A-Za-z]+){0,3}\s+\d{1,3}"
+    rf"(?:\s*:\s*{_VERSE}(?:\s*[-–—]\s*{_VERSE}(?:\s*:\s*{_VERSE})?)?"
+    rf"(?:\s*[,;]\s*{_VERSE}(?:\s*[-–—]\s*{_VERSE})?)*)?\s*\)?\s*$"
 )
 
 
@@ -495,14 +498,14 @@ def looks_like_reference(line: str) -> bool:
 def _tidy_reference(line: str) -> str:
     """"EXODUS 20:3" -> "Exodus 20:3"; keeps "1 John" and "of" as they should be."""
     # "Romans 1: 21-27" and "Romans 1 : 21 - 27" are the same reference.
-    line = re.sub(r"\s*([:\-–—])\s*", r"\1", line.strip())
+    line = re.sub(r"\s*([:\-–—])\s*", r"\1", line.strip().strip("()").strip())
     words = line.strip().split()
     out = []
     for word in words:
         if word.lower() == "of":
             out.append("of")
         elif word[:1].isdigit():
-            out.append(word)
+            out.append(word.lower())             # "4:16A" -> "4:16a"
         else:
             out.append(word[:1].upper() + word[1:].lower())
     return " ".join(out)
@@ -532,8 +535,9 @@ _OUT_QUESTION = re.compile(
 _OUT_SKIP = re.compile(r"^\s*(?:[⸻—–\-_=*•·]+|\[[^\]]*\]|no application.*|https?://\S+)\s*$",
                        re.IGNORECASE)
 _OUT_REFERENCE = re.compile(
-    r"^\s*\(?\s*(?:[1-3]\s*)?[A-Z][a-z]+\.?\s+\d+\s*:\s*\d+(?:\s*[-–—]\s*\d+)?"
-    r"(?:\s*[,;]\s*\d+(?:\s*:\s*\d+)?(?:\s*[-–—]\s*\d+)?)*\s*\)?\s*$"
+    r"^\s*\(?\s*(?:[1-3]\s*)?[A-Za-z][a-z]+\.?\s+\d+\s*:\s*\d+[a-cA-C]?"
+    r"(?:\s*[-–—]\s*\d+[a-cA-C]?)?"
+    r"(?:\s*[,;]\s*\d+(?:\s*:\s*\d+)?[a-cA-C]?(?:\s*[-–—]\s*\d+[a-cA-C]?)?)*\s*\)?\s*$"
 )
 
 
@@ -2244,17 +2248,45 @@ def speech_end_after(segments: Sequence[Segment], after: float, limit: float,
             break
 
     for sentence in rest:
-        if sentence["start"] - end > 4.0 or sentence["start"] >= limit:
+        if sentence["start"] >= limit:
             break
         text = sentence["text"]
         repeat = bool(question) and _is_repeat(text, question)
         instruction = (len(text.split()) <= 25 and _INSTRUCTION.search(text)
                        and not _STRUCTURAL.search(text))
+        # "…fight for you?" — a few seconds — "Three minutes." The instruction
+        # can come after a beat; anything else that far on is teaching.
+        if sentence["start"] - end > (INSTRUCTION_GAP if instruction else 4.0):
+            break
         if repeat or instruction:
             end = sentence["end"]
         else:
             break
-    return min(end, limit)
+
+    # Never start the countdown while the teacher is still mid-flow. If the
+    # words carry on without a breath — the question put another way, "talk
+    # it over with the person next to you" — wait for the first short pause.
+    # No pause for a long stretch means teaching simply resumed; then the
+    # end of the question stands.
+    cursor = end
+    for word in transcript_words(segments):
+        if word["end"] <= end + 0.05:
+            continue
+        if word["start"] - cursor >= BREATH_SECONDS or word["start"] >= limit:
+            break
+        cursor = word["end"]
+        if cursor - end > RUN_ON_LIMIT:
+            cursor = end
+            break
+    return min(cursor, limit)
+
+
+# A pause this long is a breath — a natural place for the countdown to start.
+BREATH_SECONDS = 1.0
+# The most that run-on speech after a question is waited through for one.
+RUN_ON_LIMIT = 25.0
+# How long after the question an instruction ("Three minutes.") still belongs to it.
+INSTRUCTION_GAP = 8.0
 
 
 # --------------------------------------------------------------------------

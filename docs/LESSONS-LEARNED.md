@@ -204,6 +204,17 @@ each be switched off for every copy in `control.json` (`"settings":
 |---|---|---|
 | Left open while the laptop slept or the tab sat in the background, the page said it had lost the connection, and refreshing loaded nothing | The app stopped itself 5 minutes after it stopped hearing from its tab — and a sleeping computer or a resting background tab goes quiet just like a closed one. The page engine also forgot a disconnected session after 2 minutes | Sessions are kept 12 hours (`server.disconnectedSessionTTL`), so a tab reconnects with all its work; the app stops only after an hour with no session at all (time asleep doesn't count), never during a job. After every analysis, render or change the work is saved, and a page that opens blank offers **Pick up where I left off** |
 
+## Feedback from the group (version 1.3.3, November 2026)
+
+| What they saw | Why | What changed |
+|---|---|---|
+| The countdown sometimes cut a question short, and "…three minutes" was heard after the timer | When the teacher carried straight on — the question put another way, or the instruction a few seconds later — only recognised repeats and instructions within 4 s were kept before the countdown | The countdown waits for the first breath (a 1 s pause) after the question, through up to 25 s of run-on speech; an instruction up to 8 s later still belongs to the question. Unit checks for both, and for teaching that simply carries on |
+| "Romans 4:16a" wasn't shown as scripture | The reference pattern didn't allow a/b after a verse | a/b/c allowed throughout (scripture box, divisions, pasted outlines) |
+| "Always in Christ (Romans 4:18-25)" wrapped as "…(Romans / 4:18-25)" | Card text wrapped wherever the line ran out | A reference is one unit; text that only just spills onto a second line is made slightly smaller to stay on one |
+| Editing a card's words in the table lost its countdown | Rows were matched to their plan by wording | Matched by row |
+| Times in seconds were hard to compare with a video player | — | The table shows and accepts minutes:seconds (2:51.3) |
+| Titles spelled out Bible Study Fellowship | — | "BSF", in the built-in teachers and in titles saved on each computer |
+
 ---
 
 ## The rules these add up to

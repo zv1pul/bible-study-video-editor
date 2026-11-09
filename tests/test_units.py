@@ -497,6 +497,67 @@ check("countdown lengths are read the way people type them",
       [editor.parse_seconds(t) for t in ("45", "45s", "2:30", "2 min", "1.5 min", "", "abc", "0", "99:00")],
       [45.0, 45.0, 150.0, 120.0, 90.0, 0.0, 0.0, 0.0, 0.0])
 
+# Lesson feedback (Nov 2026): the countdown sometimes cut a question short —
+# the teacher carried on without a breath, and "…three minutes" came AFTER
+# the timer. The countdown now waits for the first short pause.
+ASKED = "Where do you need to stand still and let God fight for you?"
+run_on = speech([
+    (ASKED, 10.0, 2.5, 0.95),
+    ("Talk it over with the person beside you and then we will come back together.", 15.5, 2.5, 0.95),
+    ("And so last week we saw how the law came after the rescue at the sea.", 60.0, 2.5, 0.95),
+])
+check_that("a question that runs straight on gets its countdown at the next breath, not mid-flow",
+           abs(matcher.speech_end_after(run_on, 14.8, 120.0) - 21.1) < 0.6,
+           f"got {matcher.speech_end_after(run_on, 14.8, 120.0):.2f}")
+late_instruction = speech([
+    (ASKED, 10.0, 2.5, 0.95),
+    ("Three minutes.", 21.0, 2.5, 0.95),
+    ("And so last week we saw how the law came after the rescue at the sea.", 60.0, 2.5, 0.95),
+])
+check_that("“three minutes” said a few seconds later still comes before the countdown",
+           abs(matcher.speech_end_after(late_instruction, 14.8, 120.0) - 21.8) < 0.6,
+           f"got {matcher.speech_end_after(late_instruction, 14.8, 120.0):.2f}")
+teaching_on = speech([
+    (ASKED, 10.0, 2.5, 0.95),
+    (" ".join(["and this is the long part of the teaching that just keeps going"] * 8), 15.2, 2.5, 0.95),
+])
+check_that("teaching that simply carries on keeps the countdown at the end of the question",
+           abs(matcher.speech_end_after(teaching_on, 14.8, 200.0) - 14.8) < 0.6,
+           f"got {matcher.speech_end_after(teaching_on, 14.8, 200.0):.2f}")
+
+# Lesson feedback: a verse with a or b ("Romans 4:16a", the first half of
+# verse 16) wasn't recognised as a reference, so that passage never showed.
+check("references with a/b verses are read",
+      [matcher.looks_like_reference(t) for t in
+       ("Romans 4:16a", "ROMANS 4:16a", "Romans 4:16a-18", "Romans 4:16b–17a",
+        "(Romans 4:16a)", "Romans 4:16, 18")],
+      [True] * 6)
+check("…and tidied the same way as any other",
+      [matcher._tidy_reference(t) for t in ("ROMANS 4:16A", "(Romans 4:16a)")],
+      ["Romans 4:16a", "Romans 4:16a"])
+check("a scripture passage given as Romans 4:16a shows with its reference",
+      matcher.parse_scripture("ROMANS 4:16a\n“That is why it depends on faith”\n\n"
+                              "ROMANS 4:17\n“as it is written”"),
+      [("Romans 4:16a", "“That is why it depends on faith”"),
+       ("Romans 4:17", "“as it is written”")])
+check("an ordinary sentence is still not taken for a reference",
+      matcher.looks_like_reference("Faith is the way"), False)
+
+# Lesson feedback: the timings table showed plain seconds; people work in
+# minutes and seconds, to the tenth.
+check("timings show as minutes:seconds to the tenth",
+      [transcriber.format_clock(x) for x in (0, 9.04, 171.26, 3723.4)],
+      ["0:00.0", "0:09.0", "2:51.3", "1:02:03.4"])
+check("…and are read back however they're typed",
+      [transcriber.parse_clock(x) for x in ("2:51.3", "2:51", "171.3", " 2 : 51 ", "1:02:03.4")],
+      [171.3, 171.0, 171.3, 171.0, 3723.4])
+check("…and nonsense is refused rather than guessed",
+      [transcriber.parse_clock(x) for x in ("2:75", "abc", "", "-3", "1:2:3:4")],
+      [None] * 5)
+check("…and every time survives the round trip",
+      all(abs(transcriber.parse_clock(transcriber.format_clock(t)) - t) < 0.051
+          for t in (0.0, 0.05, 59.95, 61.2, 1105.5, 3599.9, 3723.4)), True)
+
 # --------------------------------------------------------------------------
 # Slides, saved settings and shared keys — kept on this computer between runs.
 # A new closing slide once had to be uploaded again for every single video.
@@ -547,6 +608,11 @@ try:
 
     control.set_pref("discussion_seconds", 45)
     check("a changed setting is remembered", control.prefs().get("discussion_seconds"), 45)
+    control.remember_speaker("Old Title", "NY Men's Bible Study Fellowship Teaching Leader")
+    check("a saved title says BSF, as the group asked",
+          next(s["title"] for s in control.speakers() if s["name"] == "Old Title"),
+          "NY Men's BSF Teaching Leader")
+    control.forget_speaker("Old Title")
     control.remember_speaker("Raneil Ensomo", "Teaching Leader")
     control.remember_speaker("Eric Roachford", "Substitute Teaching Leader")
     control.remember_speaker("raneil ensomo", "Teaching Leader")

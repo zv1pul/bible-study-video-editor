@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import platform
 import subprocess
 import threading
@@ -35,7 +36,7 @@ from typing import Any, Dict, Optional
 
 import requests
 
-VERSION = "1.3.2"
+VERSION = "1.3.3"
 
 # Where every installed copy looks for instructions. A plain file in the
 # repository: no server to run, no bill, and you change it with a commit.
@@ -533,12 +534,17 @@ def set_pref(name: str, value: Any) -> None:
 SPEAKERS_KEPT = 15
 
 
+def _short_title(title: str) -> str:
+    """The group asked for "BSF" rather than "Bible Study Fellowship" in titles."""
+    return re.sub(r"\bBible\s+Study\s+Fellowship\b", "BSF", title or "", flags=re.IGNORECASE)
+
+
 def _clean_speakers(entries) -> list:
     out = []
     for entry in entries or []:
         if isinstance(entry, dict) and str(entry.get("name") or "").strip():
             out.append({"name": str(entry["name"]).strip(),
-                        "title": str(entry.get("title") or "").strip()})
+                        "title": _short_title(str(entry.get("title") or "").strip())})
     return out
 
 

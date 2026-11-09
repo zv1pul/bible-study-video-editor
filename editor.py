@@ -231,13 +231,30 @@ def _text_width(text: str, font) -> float:
     return _MEASURE.textlength(text, font=font)
 
 
+# A scripture reference is one unit: "(Romans 4:18-25)" must never be broken
+# into "(Romans" and "4:18-25)" on two lines.
+_REFERENCE_UNIT = re.compile(
+    r"\(?\b(?:[1-3]\s+)?[A-Z][A-Za-z]+(?:\s+of\s+[A-Z][A-Za-z]+)?\s+\d{1,3}:\d{1,3}[a-cA-C]?"
+    r"(?:\s*[-–—]\s*\d{1,3}(?::\d{1,3})?[a-cA-C]?)?(?:\s*,\s*\d{1,3}[a-cA-C]?)*\)?"
+)
+_KEEP_TOGETHER = "\u00a0"
+
+
+def _glue_references(text: str) -> str:
+    return _REFERENCE_UNIT.sub(lambda m: re.sub(r"\s+", _KEEP_TOGETHER, m.group(0)), text or "")
+
+
 def _wrap(text: str, font, max_width: float, max_lines: int = 3) -> List[str]:
-    words = (text or "").split()
+    words = [w for w in re.split(r"[ \t\n]+", _glue_references(text).strip()) if w]
     lines: List[str] = []
     current = ""
+
+    def width(value: str) -> float:
+        return _text_width(value.replace(_KEEP_TOGETHER, " "), font)
+
     for word in words:
         candidate = f"{current} {word}".strip()
-        if not current or _text_width(candidate, font) <= max_width:
+        if not current or width(candidate) <= max_width:
             current = candidate
         else:
             lines.append(current)
@@ -247,7 +264,7 @@ def _wrap(text: str, font, max_width: float, max_lines: int = 3) -> List[str]:
     if len(lines) > max_lines:
         lines = lines[:max_lines]
         lines[-1] = lines[-1].rstrip(" .,;:") + "…"
-    return lines or [""]
+    return [line.replace(_KEEP_TOGETHER, " ") for line in lines] or [""]
 
 
 def make_caption_image(
@@ -320,6 +337,10 @@ def _is_list(lines: Sequence[str]) -> bool:
     return marked >= max(2, len(lines) // 2)
 
 
+# How much smaller text may get to stay on one line instead of two.
+ONE_LINE_SHRINK = 0.8
+
+
 def _fit_text(
     text: str,
     size: float,
@@ -340,6 +361,17 @@ def _fit_text(
     would be unreadable anyway.
     """
     size = float(size)
+    # Text that only just spills onto a second line ("Always in Christ (Romans
+    # 4:18-25)") reads better a touch smaller on one line than broken in two.
+    font = load_font(size, bold=bold)
+    if len(_wrap(text, font, max_width, max_lines=99)) == 2:
+        smaller = size
+        while smaller >= size * ONE_LINE_SHRINK:
+            smaller *= 0.97
+            narrow = load_font(smaller, bold=bold)
+            if len(_wrap(text, narrow, max_width, max_lines=99)) == 1:
+                return narrow, _wrap(text, narrow, max_width, max_lines=99), \
+                    int(narrow.size * line_spacing)
     while True:
         font = load_font(size, bold=bold)
         lines = _wrap(text, font, max_width, max_lines=99)

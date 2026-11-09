@@ -253,19 +253,22 @@ def cues_from_table(edited, plans, discussion_seconds: float, caption_seconds: f
     """
     Turn the (possibly edited) timings table into render cues.
 
-    `plans` maps a point's text to its analysed Element, which carries the
+    `plans` lists each row's analysed Element, in table order, which carries the
     things the table does not show — the pause position, the cut, the
     overview's division list. A row's own "Discussion (s)" overrides the
     sidebar's discussion time for that one question.
     """
     active = edited[edited["Show"].fillna(False).astype(bool)]
     cues = []
-    for _, row in active.iterrows():
+    for index, row in active.iterrows():
         start = float(row["Start (s)"])
         end = float(row["End (s)"])
         span = end - start
         wants_timer = bool(row.get("Timer", False))
-        plan = plans.get(str(row["Point"]))
+        # By row, not by wording: the words on a card can be edited without
+        # losing its countdown or its cut.
+        plan = plans[index] if isinstance(plans, list) and index < len(plans) \
+            else (plans.get(str(row["Point"])) if isinstance(plans, dict) else None)
         own = row.get("Discussion (s)")
         timer_seconds = editor.parse_seconds(own) or discussion_seconds
         cues.append(
@@ -545,6 +548,7 @@ def apply_changes(changes: list, records: list) -> None:
         except (TypeError, ValueError):
             pass
         match.header = str(row.get("Header") or match.header or "")
+        match.content = str(row.get("Point") or match.content)
         match.has_timer = bool(row.get("Timer", match.has_timer))
         overrides[i] = {"Show": bool(row.get("Show", True)),
                         "Discussion (s)": str(row.get("Discussion (s)") or "")}
@@ -2059,8 +2063,10 @@ if st.session_state.verdicts:
                 "Status": verifier.VERDICT_LABEL[v.verdict],
                 "Header": v.match.header or v.match.category,
                 "Point": v.match.text,
-                "Start (s)": float(v.match.start_time),
-                "End (s)": float(v.match.end_time),
+                # Minutes and seconds to the tenth — "2:51.3" — easier to
+                # match against a video player than 171.3 seconds.
+                "Start": transcriber.format_clock(v.match.start_time),
+                "End": transcriber.format_clock(v.match.end_time),
                 "On screen": transcriber.format_timestamp(
                     max(v.match.end_time - v.match.start_time, 0)
                 ),
@@ -2090,7 +2096,7 @@ if st.session_state.verdicts:
         help="Adds the words the speaker actually said at each point and the "
              "checks behind every status — handy when a row needs a closer look.",
     )
-    _columns = ["Show", "Status", "Header", "Point", "Start (s)", "End (s)",
+    _columns = ["Show", "Status", "Header", "Point", "Start", "End",
                 "On screen", "Timer", "Discussion (s)", "Cut"]
     if _details:
         _columns += ["Heard", "Why"]
@@ -2114,12 +2120,19 @@ if st.session_state.verdicts:
                      "a scripture reference works just as well as "
                      "\"Principle #1\".",
             ),
-            "Point": st.column_config.TextColumn(width="large"),
-            "Start (s)": st.column_config.NumberColumn(
-                "Start (s)", min_value=0.0, max_value=max(duration, 1.0), step=0.5, format="%.1f"
+            "Point": st.column_config.TextColumn(
+                "Point", width="large",
+                help="The words shown on the card — change them freely. Type | where "
+                     "a new line should start, e.g. “Always in Christ | (Romans 4:18-25)”.",
             ),
-            "End (s)": st.column_config.NumberColumn(
-                "End (s)", min_value=0.0, max_value=max(duration, 1.0), step=0.5, format="%.1f"
+            "Start": st.column_config.TextColumn(
+                "Start", width="small", max_chars=12,
+                help="When the card appears, in minutes:seconds — 2:51.3 is 2 minutes "
+                     "51.3 seconds into the recording. Type 2:51, 2:51.3 or 171.3.",
+            ),
+            "End": st.column_config.TextColumn(
+                "End", width="small", max_chars=12,
+                help="When the card goes, in minutes:seconds.",
             ),
             "On screen": st.column_config.TextColumn(
                 "On screen", disabled=True, width="small"
@@ -2148,8 +2161,28 @@ if st.session_state.verdicts:
         key=f"matches_editor_{st.session_state.get('table_rev', 0)}",
     )
 
+    # Read the typed times back into seconds. Anything that can't be read
+    # keeps the time it had, and says so, rather than breaking the video.
+    _unreadable = []
+    _starts, _ends = [], []
+    for _i, _row in edited.iterrows():
+        _match = table_verdicts[_i].match if _i < len(table_verdicts) else None
+        for _column, _into, _fallback in (
+                ("Start", _starts, _match.start_time if _match else 0.0),
+                ("End", _ends, _match.end_time if _match else 0.0)):
+            _value = transcriber.parse_clock(_row.get(_column))
+            if _value is None or (duration and _value > duration + 1.0):
+                _unreadable.append(f"“{_row.get(_column)}” ({_column.lower()} of "
+                                   f"“{str(_row.get('Point'))[:40]}”)")
+                _value = float(_fallback)
+            _into.append(_value)
+    edited = edited.assign(**{"Start (s)": _starts, "End (s)": _ends})
+    if _unreadable:
+        st.warning("Couldn't read " + "; ".join(_unreadable) +
+                   " — kept the earlier time. Use minutes:seconds, like 2:51.3.")
+
     requested = cues_from_table(
-        edited, {v.match.text: v.match for v in verdicts},
+        edited, [v.match for v in table_verdicts],
         float(discussion_seconds), float(caption_seconds),
     )
     _records = edited.to_dict("records")
