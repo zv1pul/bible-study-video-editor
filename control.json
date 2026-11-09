@@ -1,9 +1,9 @@
 {
-  "latest_version": "1.3.2",
+  "latest_version": "1.3.3",
   "minimum_version": "0.0.0",
   "message": "",
   "message_kind": "info",
-  "release_notes": "Leave it in the background: the page now reconnects with all your work after sleep or a background tab, and \"Pick up where I left off\" brings a lesson back.",
+  "release_notes": "From the group's feedback: timings in minutes:seconds, questions no longer cut short before the countdown, BSF in titles, half verses like Romans 4:16a, tidier card wrapping.",
   "telemetry_url": "",
   "settings": {},
   "vault_url": "",
