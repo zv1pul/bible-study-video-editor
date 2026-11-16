@@ -483,22 +483,74 @@ def _points_from_structured(outline: dict) -> List[LessonPoint]:
 
 # "Romans 3:21–22", "1 John 4:8", "Psalm 23", "EXODUS 20:3", "Song of Songs 2:1"
 # A verse may end in a, b or c — "Romans 4:16a" is the first half of verse 16.
+# Books may be shortened ("Rom.", "1 Cor."); a comma typed for the colon
+# ("Romans 5,12") is read as the colon; several chapters may follow one
+# another ("Romans 5:12; 6:23").
 _VERSE = r"\d{1,3}[a-cA-C]?"
-_REFERENCE = re.compile(
-    r"^\s*\(?\s*(?:[1-3]\s*)?[A-Za-z]+(?:\s+(?:of\s+)?[A-Za-z]+){0,3}\s+\d{1,3}"
-    rf"(?:\s*:\s*{_VERSE}(?:\s*[-–—]\s*{_VERSE}(?:\s*:\s*{_VERSE})?)?"
-    rf"(?:\s*[,;]\s*{_VERSE}(?:\s*[-–—]\s*{_VERSE})?)*)?\s*\)?\s*$"
+_BOOK = r"(?:[1-3]\s*)?[A-Za-z]+\.?(?:\s+(?:of\s+)?[A-Za-z]+\.?){0,3}"
+_RANGE = rf"{_VERSE}(?:\s*[-–—]\s*(?:\d{{1,3}}\s*:\s*)?{_VERSE})?"
+_CHAPTER_VERSES = rf"\d{{1,3}}(?:\s*[:,.]\s*{_RANGE}(?:\s*,\s*{_RANGE})*)?"
+_REFERENCE_BODY = rf"{_BOOK}\s+{_CHAPTER_VERSES}(?:\s*;\s*{_CHAPTER_VERSES})*"
+_REFERENCE = re.compile(rf"^\s*\(?\s*{_REFERENCE_BODY}\s*\)?\s*$")
+# A reference at the end of a verse line: "…glory of God.” (Romans 3:23)",
+# "…our Lord.” — Romans 5:21b".
+_TRAILING_REFERENCE = re.compile(
+    rf"^(?P<text>.*?\S)\s*(?:\(\s*|[—–-]+\s*)(?P<ref>{_REFERENCE_BODY})\s*\)?\s*$"
 )
+# Verse numbers pasted from a Bible app: "8 But God…", "¹²Therefore…".
+_VERSE_NUMBER = re.compile(r"^\s*\d{1,3}\s+(?=[“\"'‘A-Za-z])")
+_SUPERSCRIPT = re.compile(r"[⁰¹²³⁴⁵⁶⁷⁸⁹]+")
+
+
+# The first letters of every book of the Bible, and the usual short forms, so
+# "Read verse 12" is never mistaken for a reference.
+_BOOK_STARTS = {
+    "gen", "exo", "lev", "num", "deu", "jos", "jdg", "jud", "rut", "sam", "kin", "chr",
+    "ezr", "neh", "est", "job", "psa", "pro", "ecc", "son", "isa", "jer", "lam", "eze",
+    "dan", "hos", "joe", "amo", "oba", "jon", "mic", "nah", "hab", "zep", "hag", "zec",
+    "mal", "mat", "mar", "luk", "joh", "act", "rom", "cor", "gal", "eph", "phi", "col",
+    "the", "tim", "tit", "phm", "heb", "jas", "jam", "pet", "jn", "rev",
+    "ge", "ex", "lv", "nu", "dt", "jsh", "jg", "ru", "sa", "ki", "ch", "ne", "es", "jb",
+    "ps", "pr", "ec", "ss", "is", "je", "la", "ez", "da", "ho", "jl", "am", "ob", "mi",
+    "na", "hb", "zp", "hg", "zc", "ml", "mt", "mk", "lk", "ac", "ro", "co", "ga", "ep",
+    "ph", "cl", "th", "ti", "he", "jm", "pe", "jo", "re", "jud", "phlm", "sng", "can",
+}
+
+
+def _book_known(line: str) -> bool:
+    words = re.findall(r"[A-Za-z]+", line or "")
+    if not words:
+        return False
+    first = words[0].lower()
+    if first == "the" and len(words) > 1 and words[1].lower().startswith("song"):
+        return True            # "The Song of Songs"
+    if first == "the":
+        return False            # "The …" otherwise isn't a book ("The Thessalonians" aside)
+    # A long word must begin like a book ("Romans", "Psalm", "Phil"); a short
+    # form only counts on its own ("Ps", "Jn", "Re"), never as the start of an
+    # ordinary word ("Read").
+    return first in _BOOK_STARTS or (len(first) >= 3 and first[:3] in _BOOK_STARTS)
 
 
 def looks_like_reference(line: str) -> bool:
-    return bool(_REFERENCE.match(line or "")) and len((line or "").split()) <= 5
+    if not (_REFERENCE.match(line or "") and len((line or "").split()) <= 6
+            and _book_known(line)):
+        return False
+    # "Psalm 23" and "Romans 4" are references; "He said 3" isn't. Without a
+    # verse, the book has to be written out.
+    if not re.search(r"\d\s*[:,.]\s*\d", line):
+        first = (re.findall(r"[A-Za-z]+", line) or [""])[0]
+        return len(first) >= 4
+    return True
 
 
 def _tidy_reference(line: str) -> str:
     """"EXODUS 20:3" -> "Exodus 20:3"; keeps "1 John" and "of" as they should be."""
     # "Romans 1: 21-27" and "Romans 1 : 21 - 27" are the same reference.
     line = re.sub(r"\s*([:\-–—])\s*", r"\1", line.strip().strip("()").strip())
+    # "Romans 5,12, 21b" and "Romans 5.12" were meant as "Romans 5:12, 21b".
+    if ":" not in line:
+        line = re.sub(r"^(\D*?\d{1,3})\s*[,.]\s*(?=\d)", r"\1:", line)
     words = line.strip().split()
     out = []
     for word in words:
@@ -525,6 +577,9 @@ _OUT_TITLE = re.compile(r"^\s*(?:lesson\s+)?t?itle\s*[:\-–—]\s*(.+)$", re.IG
 _OUT_TAKEAWAY = re.compile(r"^\s*(?:today'?s\s+)?take\s*-?\s*away\b\s*[:\-–—]?\s*(.*)$",
                            re.IGNORECASE)
 _OUT_DIVISION = re.compile(r"^\s*division\b", re.IGNORECASE)
+_OUT_SCRIPTURE = re.compile(
+    r"^\s*(?:scriptures?|key\s+verses?|memory\s+verses?|passages?(?:\s+to\s+read)?|"
+    r"scripture\s+(?:reading|passages?))\s*[:\-–—]?\s*(.*)$", re.IGNORECASE)
 _OUT_PRINCIPLE = re.compile(r"^\s*principles?\b\s*(?:#?\d+)?\s*[:\-–—]?\s*(.*)$", re.IGNORECASE)
 _OUT_QUESTION = re.compile(
     r"^\s*(?:\d+\s*-?\s*minutes?\s+)?"
@@ -554,7 +609,8 @@ def read_outline(text: str) -> dict:
     card is headed with it. Anything it can't place is left out rather than
     guessed — the boxes are there to check and correct.
     """
-    out = {"title": "", "takeaway": "", "divisions": []}
+    out = {"title": "", "takeaway": "", "divisions": [], "scripture": ""}
+    scripture: List[str] = []
     section, question = "", None
 
     def division() -> dict:
@@ -585,6 +641,15 @@ def read_outline(text: str) -> dict:
             if match.group(1).strip():
                 out["takeaway"] = (out["takeaway"] + " " + match.group(1).strip()).strip()
             continue
+        match = _OUT_SCRIPTURE.match(line)
+        if match and not looks_like_reference(line):
+            # "Scripture" / "Key verse": passages to show as they're read —
+            # they go to the scripture box, not into a principle.
+            close_question()
+            section = "scripture"
+            if match.group(1).strip():
+                scripture.append(match.group(1).strip())
+            continue
         if _OUT_DIVISION.match(line):
             close_question()
             out["divisions"].append({"title": line, "principles": [], "applications": []})
@@ -609,7 +674,9 @@ def read_outline(text: str) -> dict:
                 question[1].append(match.group(2).strip())
             continue
 
-        if section == "takeaway":
+        if section == "scripture":
+            scripture.append(raw.strip())
+        elif section == "takeaway":
             out["takeaway"] = (out["takeaway"] + " " + line).strip()
         elif section == "division":
             # The scripture, or the rest of a long division title.
@@ -622,6 +689,7 @@ def read_outline(text: str) -> dict:
             question[1].append(line)
     close_question()
 
+    out["scripture"] = "\n".join(scripture).strip()
     out["divisions"] = [
         {"title": d["title"] or f"Division {i}",
          "principles": "\n".join(d["principles"]),
@@ -687,21 +755,66 @@ def parse_scripture(value) -> List[tuple]:
                 out.append((_tidy_reference(ref) if ref else "Scripture", text))
         return out
 
-    passages: List[list] = []          # [reference, [verse lines]]
-    for raw in str(value).replace("\r", "").split("\n"):
-        line = raw.strip()
+    # Each passage is some verse text and one reference — written above it,
+    # below it, or at the end of its last line. A passage may run over several
+    # paragraphs; passages may or may not be separated by blank lines.
+    passages: List[dict] = []          # {"ref", "paras": [[lines]], "closed"}
+
+    def open_passage(ref: str = "") -> dict:
+        passages.append({"ref": ref, "paras": [[]], "closed": False})
+        return passages[-1]
+
+    lines = [_SUPERSCRIPT.sub("", raw).strip()
+             for raw in str(value).replace("\r", "").split("\n")]
+
+    def text_follows(index: int) -> bool:
+        """Is the next non-blank line verse text (not another reference, not the end)?"""
+        for later in lines[index + 1:]:
+            if later:
+                return not looks_like_reference(later)
+        return False
+
+    current: Optional[dict] = None
+    for index, line in enumerate(lines):
         if not line:
+            if current is not None and current["paras"][-1]:
+                current["paras"].append([])           # a new paragraph, same passage
             continue
         if looks_like_reference(line):
-            passages.append([_tidy_reference(line), []])
-        elif passages:
-            passages[-1][1].append(line)
+            reference = _tidy_reference(line)
+            has_text = current is not None and any(current["paras"])
+            if has_text and not current["ref"] and not current["closed"]:
+                current["ref"] = reference              # written under its verse
+                current["closed"] = True
+            elif (has_text and current["ref"] and not current["closed"]
+                  and not text_follows(index)
+                  and len([p for p in current["paras"] if p]) > 1):
+                # Written under the last paragraph of a passage that had its
+                # reference above: that paragraph is a passage of its own.
+                last = [p for p in current["paras"] if p][-1]
+                current["paras"] = [p for p in current["paras"] if p][:-1]
+                current = open_passage(reference)
+                current["paras"] = [last]
+                current["closed"] = True
+            else:
+                current = open_passage(reference)
+            continue
+        trailing = _TRAILING_REFERENCE.match(line)
+        if trailing and looks_like_reference(trailing.group("ref")):
+            line, reference = trailing.group("text").strip(), _tidy_reference(trailing.group("ref"))
         else:
-            passages.append(["Scripture", [line]])
+            reference = ""
+        if current is None or current["closed"] or (reference and current["ref"]):
+            current = open_passage()
+        current["paras"][-1].append(_VERSE_NUMBER.sub("", line))
+        if reference:
+            current["ref"] = current["ref"] or reference
+            current["closed"] = True
     return [
-        (ref, " ".join(" ".join(lines).split()))
-        for ref, lines in passages
-        if lines
+        (passage["ref"] or "Scripture",
+         " ".join(" ".join(line for para in passage["paras"] for line in para).split()))
+        for passage in passages
+        if any(passage["paras"])
     ]
 
 

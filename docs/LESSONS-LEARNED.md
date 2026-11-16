@@ -215,6 +215,20 @@ each be switched off for every copy in `control.json` (`"settings":
 | Times in seconds were hard to compare with a video player | — | The table shows and accepts minutes:seconds (2:51.3) |
 | Titles spelled out Bible Study Fellowship | — | "BSF", in the built-in teachers and in titles saved on each computer |
 
+## Scripture written every way (version 1.3.4, November 2026)
+
+| What they wrote | Why it needed work | What changed |
+|---|---|---|
+| The reference *after* the passage ("…verse text — Romans 5:12, 21b", or in brackets) | Only a reference on its own line *above* the text was understood | Above, below, or on the same line (brackets or a dash) all work, with or without blank lines, mixed in one box |
+| "Romans 5,12, 21b" | A comma where the colon belongs | Read as Romans 5:12, 21b |
+| Rom. 5:12; 6:23, 1 Cor 13:4-7, 1:5b-6, 1:5,8 | Short book names, several chapters, lists | All recognised, and kept together on the card |
+| Verses copied from a Bible app ("12 Therefore…", ¹²) | Verse numbers became part of the words to find | Leading verse numbers and superscripts are removed |
+| A long passage pasted as several paragraphs | Each blank line started a new passage | Blank lines are paragraphs of the same passage; a new passage starts at a reference |
+| "Read verse 12" or "He said 3" taken for a reference | Anything word + number looked like one | A reference must start with a real book name |
+| Scripture inside a pasted outline | Went nowhere | A "Scripture" / "Key verse" / "Passage" section goes into the scripture box |
+
+The page now shows what it found ("Found: Romans 5:12, 21b (64 words)") and warns if a passage has no reference. Unit checks cover every form above, including the group member's exact message.
+
 ---
 
 ## The rules these add up to

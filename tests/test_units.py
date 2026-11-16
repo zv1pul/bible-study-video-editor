@@ -491,7 +491,7 @@ labels = [p.label for p in matcher.build_lesson_points(
 check("a Final Reflection Question keeps its own heading", labels[-1], "Final Reflection")
 check("text with no outline in it fills nothing",
       matcher.read_outline("hi, here is the link for tonight's video"),
-      {"title": "", "takeaway": "", "divisions": []})
+      {"title": "", "takeaway": "", "divisions": [], "scripture": ""})
 
 check("countdown lengths are read the way people type them",
       [editor.parse_seconds(t) for t in ("45", "45s", "2:30", "2 min", "1.5 min", "", "abc", "0", "99:00")],
@@ -557,6 +557,51 @@ check("…and nonsense is refused rather than guessed",
 check("…and every time survives the round trip",
       all(abs(transcriber.parse_clock(transcriber.format_clock(t)) - t) < 0.051
           for t in (0.0, 0.05, 59.95, 61.2, 1105.5, 3599.9, 3723.4)), True)
+
+# Lesson feedback (Nov 2026): scripture typed the way people actually type it.
+# Romans 5:12, 21b with the reference UNDER the verse once put the wrong
+# reference on the next passage; brackets, "Rom.", "5,12" and pasted verse
+# numbers weren't understood.
+V1 = "“For all have sinned and fall short of the glory of God.”"
+V2 = "“But God demonstrates his own love for us in this: While we were still sinners, Christ died for us.”"
+PAIR = [("Romans 3:23", V1), ("Romans 5:8", V2)]
+for name, typed in {
+    "reference above": f"Romans 3:23\n{V1}\n\nRomans 5:8\n{V2}",
+    "reference above, no blank line": f"Romans 3:23\n{V1}\nRomans 5:8\n{V2}",
+    "reference below": f"{V1}\nRomans 3:23\n\n{V2}\nRomans 5:8",
+    "reference below, no blank line": f"{V1}\nRomans 3:23\n{V2}\nRomans 5:8",
+    "reference in brackets after": f"{V1} (Romans 3:23)\n{V2} (Romans 5:8)",
+    "reference after a dash": f"{V1} — Romans 3:23\n{V2} – Romans 5:8",
+    "first above, second below": f"Romans 3:23\n{V1}\n\n{V2}\nRomans 5:8",
+}.items():
+    check(f"scripture: {name}", matcher.parse_scripture(typed), PAIR)
+ROMANS_5 = ("“Therefore, just as sin entered the world through one man, and death through sin, "
+            "and in this way death came to all people, because all sinned— …so also grace "
+            "might reign through righteousness to bring eternal life through Jesus Christ our Lord.”")
+check("scripture: his message exactly as he wrote it (verse, then Romans 5:12, 21b)",
+      matcher.parse_scripture(f"{ROMANS_5}\nRomans 5:12, 21b"), [("Romans 5:12, 21b", ROMANS_5)])
+check("scripture: Romans 5,12, 21b is read as 5:12, 21b",
+      matcher.parse_scripture(f"Romans 5,12, 21b\n{ROMANS_5}"), [("Romans 5:12, 21b", ROMANS_5)])
+check("scripture: every reference form in his list",
+      [matcher.looks_like_reference(r) for r in
+       ("Romans 1:5", "Romans 1:5-6", "Romans 1:5b", "Romans 1:5b-6", "Romans 1:5,8",
+        "Romans 5:12, 21b", "Rom. 5:12", "1 Cor. 13:4", "Romans 5:12; 6:23", "Ps 23:1",
+        "Song of Songs 2:4", "Psalm 23")], [True] * 12)
+check("scripture: ordinary lines are never taken for a reference",
+      [matcher.looks_like_reference(r) for r in
+       ("Read verse 12", "He said 3", "Division 3", "The law 4:3", "Faith is the way")],
+      [False] * 5)
+check("scripture: verse numbers pasted from a Bible app are left off the card",
+      matcher.parse_scripture("Romans 5:8\n8 But God demonstrates his love.\n\nRomans 5:12\n¹²Therefore sin entered."),
+      [("Romans 5:8", "But God demonstrates his love."), ("Romans 5:12", "Therefore sin entered.")])
+check("scripture: a passage in paragraphs stays one passage",
+      len(matcher.parse_scripture("Romans 3:21–22\n“But now apart from the law\n\nthis righteousness is given.”")), 1)
+outline_with_verse = ("TAKEAWAY\nGrace reigns.\nDIVISION 1 — Two Men\nPrinciple\nIn Adam all die.\n"
+                      f"Scripture\n{ROMANS_5}\nRomans 5:12, 21b")
+found = matcher.read_outline(outline_with_verse)
+check("a pasted outline's Scripture section goes to the scripture box, not into a principle",
+      (matcher.parse_scripture(found["scripture"]), found["divisions"][0]["principles"]),
+      ([("Romans 5:12, 21b", ROMANS_5)], "In Adam all die."))
 
 # --------------------------------------------------------------------------
 # Slides, saved settings and shared keys — kept on this computer between runs.

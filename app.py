@@ -1593,6 +1593,8 @@ with right:
             return
         if found["title"]:
             st.session_state.lesson_title_box = found["title"]
+        if found.get("scripture"):
+            st.session_state.scripture_box = found["scripture"]
         st.session_state.takeaway_box = found["takeaway"]
         st.session_state.divisions_box = "\n".join(d["title"] for d in found["divisions"])
         for key in [k for k in st.session_state.keys()
@@ -1685,7 +1687,7 @@ with right:
         })
 
     with st.expander("Scripture read aloud — shown on screen as you read it (optional)",
-                     expanded=False):
+                     expanded=bool(st.session_state.get("scripture_box"))):
         scripture = st.text_area(
             "Passages",
             key="scripture_box",
@@ -1695,15 +1697,22 @@ with right:
                         "glory of God.”\n\nROMANS 5:8\n“But God demonstrates his "
                         "own love for us in this: While we were still sinners, "
                         "Christ died for us.”",
-            help="Passages you read out word for word. Put the reference on "
-                 "its own line, the verse under it, and a blank line between "
-                 "passages. Each appears on screen from a moment before you "
-                 "start reading it until a moment after you finish — found by "
-                 "matching the words themselves, so it lands to the second.",
+            help="Passages you read out word for word, each with its reference — "
+                 "above the verse, below it, or at the end of it in brackets. "
+                 "Any form works: Romans 1:5, 1:5-6, 1:5b, 1:5b-6, 1:5,8, "
+                 "5:12, 21b, Rom. 5:12, 1 Cor. 13:4. Use … for verses skipped "
+                 "between. Each appears on screen from a moment before you start "
+                 "reading it until a moment after you finish — found by matching "
+                 "the words themselves, so it lands to the second.",
         )
         _passages = matcher.parse_scripture(scripture)
         if _passages:
-            st.caption("  ·  ".join(ref for ref, _ in _passages))
+            st.caption("Found: " + "  ·  ".join(
+                f"**{ref}** ({len(text.split())} words)" for ref, text in _passages))
+            if any(ref == "Scripture" for ref, _ in _passages):
+                st.warning("A passage has no reference, so its card will just say "
+                           "“Scripture”. Add the reference on the line above or "
+                           "below it — e.g. Romans 5:12, 21b.")
 
     _counts = {
         "takeaway": len(matcher.split_items(takeaway)),
