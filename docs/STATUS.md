@@ -4,19 +4,13 @@
 
 ## Now
 
-- **Published version: 1.3.4** (2026-11-15) —
+- **Published version: 1.3.5** (2026-11-15) —
   https://github.com/zv1pul/bible-study-video-editor/releases/latest
   (Mac Apple Silicon, Mac Intel, Windows). Older releases removed; their tags kept.
   The app always uses address 47823 (falls back only if something else uses it).
-- `control.json` `latest_version` = 1.3.4, so installed copies offer it.
+- `control.json` `latest_version` = 1.3.5, so installed copies offer it.
 - Every check passes locally and on GitHub (Apple Silicon, Intel, Windows); the
   three published downloads were each opened and checked on their own computer.
-
-## Ready, not yet published: 1.3.5
-
-A question can come anywhere in its division — opening it, between principles
-or at the end — on the offline backup too (the AI path already handled it).
-All checks pass locally. Waiting for the owner's yes to publish.
 
 ## What 1.3.0 can do
 
@@ -45,7 +39,7 @@ render with one-click fixes, the chat helper, Report a problem.
 | 2026-10-20 | — | Lesson 7 (Eric, Romans 3:21–26): announced group discussions cut to the call back |
 | 2026-10-23 | 1.2.1 | Paste outline, preset speakers, lesson title, slides one at a time, every setting remembered, page tests on all computers |
 | 2026-10-23 | 1.3.0 | Video check after every render, chat helper, Report a problem |
-| 2026-11-15 | 1.3.5 | A question anywhere in its division, on the offline backup too — not yet published |
+| 2026-11-15 | 1.3.5 | A question anywhere in its division, on the offline backup too |
 | 2026-11-15 | 1.3.4 | Scripture in every format the group uses (reference before/after, typos, short book names, verse numbers) |
 | 2026-11-09 | 1.3.3 | Group feedback: m:ss.s timings, countdown waits for a breath, BSF titles, half verses (4:16a), references kept together on cards |
 | 2026-10-24 | 1.3.2 | Leave it in the background: sessions survive sleep (12 h), no early shutdown, "Pick up where I left off" |
