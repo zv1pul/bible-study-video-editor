@@ -1117,7 +1117,9 @@ RULES
    in teaching order (scripture excepted — it is read wherever the teaching
    calls for it). Where an item says "belongs under", it is taught after
    that division is introduced and before the next division begins — use that
-   to narrow your search.
+   to narrow your search. Inside a division, principles and questions can
+   come in any order: a question may open the division, come between two
+   principles, or close it. Place each where it is actually said.
 5. If an item is never discussed, still return it with confidence 0.
 6. confidence is your honest probability from 0 to 1 that this is the right
    moment. Low confidence is far more useful to us than a confident guess.
@@ -1861,7 +1863,14 @@ def keyword_match(
     """
     Crude but dependable: score each transcript window by how many of the
     outline item's distinctive words it contains, plus a fuzzy similarity
-    bonus, and walk forward through the video so points stay in order.
+    bonus, and walk forward through the video so divisions stay in order.
+
+    Inside a division the principles and questions may come in any order —
+    a question can open a division, sit between two principles or close it —
+    so each is looked for from where the division's material begins, not
+    after the item listed before it. The division's own title is then placed
+    no later than its first item: teachers recite every title in the
+    overview, and a title's few words often come up again later.
     """
     if not segments:
         return [
@@ -1872,40 +1881,84 @@ def keyword_match(
     windows: List[tuple] = []
     for index, seg in enumerate(segments):
         text = " ".join(s.text for s in segments[index : index + 3])
-        windows.append((seg.start, text, _tokens(text)))
+        windows.append((seg.start, text, _tokens(text), set(_tokens(seg.text))))
+    last = len(windows) - 1
+
+    def best(point: LessonPoint, low: int, high: int) -> tuple:
+        # Each window is three sentences, so the sentence before a point
+        # scores as well as the point itself. A small bonus for the point's
+        # words in the window's FIRST sentence settles that tie in favour
+        # of where it is actually said; the score reported is unchanged.
+        wanted = set(_tokens(point.text))
+        best_rank, best_score, best_index = -1.0, -1.0, min(low, last)
+        if not wanted:
+            return best_score, best_index
+        for index in range(min(low, last), min(high, len(windows))):
+            _start, text, window_tokens, head = windows[index]
+            overlap = len(wanted & set(window_tokens)) / len(wanted)
+            fuzzy = SequenceMatcher(None, point.text.lower(), text.lower()[:400]).ratio()
+            score = overlap * 0.75 + fuzzy * 0.25
+            rank = score + 0.2 * len(wanted & head) / len(wanted)
+            # Points are usually read twice; on a near tie the first
+            # reading (the earlier window) is kept.
+            if rank > best_rank + 0.02:
+                best_rank, best_score, best_index = rank, score, index
+        return best_score, best_index
+
+    found: Dict[str, tuple] = {}
+    cursor = 0
+    index = 0
+    # Only a reasonably confident hit moves the walk on, so one bad match
+    # cannot push everything after it to the end of the video.
+    confident = 0.35
+    while index < len(points):
+        point = points[index]
+        if point.category != "Division":
+            found[point.id] = best(point, cursor, len(windows))
+            if found[point.id][0] > confident:
+                cursor = min(found[point.id][1] + 1, last)
+            index += 1
+            continue
+
+        items = []
+        following = index + 1
+        while (following < len(points) and points[following].category != "Division"
+               and points[following].division == point.text
+               and points[following].category in ("Principle", "Application")):
+            items.append(points[following])
+            following += 1
+
+        region = cursor
+        furthest, first_item = cursor, None
+        for item in items:
+            found[item.id] = best(item, region, len(windows))
+            score, at = found[item.id]
+            if score > confident:
+                furthest = max(furthest, min(at + 1, last))
+                first_item = at if first_item is None else min(first_item, at)
+        high = first_item + 1 if first_item is not None else len(windows)
+        found[point.id] = best(point, region, high)
+        score, at = found[point.id]
+        cursor = furthest
+        if score > confident and not items:
+            cursor = max(cursor, min(at + 1, last))
+        index = following
 
     matches: List[Match] = []
-    cursor = 0
     for point in points:
-        wanted = set(_tokens(point.text))
-        best_score, best_index = -1.0, cursor
-        for index in range(cursor, len(windows)):
-            start, text, window_tokens = windows[index]
-            if not wanted:
-                break
-            overlap = len(wanted & set(window_tokens)) / len(wanted)
-            fuzzy = SequenceMatcher(
-                None, point.text.lower(), text.lower()[:400]
-            ).ratio()
-            score = overlap * 0.75 + fuzzy * 0.25
-            if score > best_score:
-                best_score, best_index = score, index
-        start, text, _ = windows[best_index]
+        score, at = found.get(point.id, (0.0, 0))
+        start, text = windows[at][0], windows[at][1]
         matches.append(
             Element(
                 type=point.type,
                 content=point.text,
                 start_time=float(start),
                 id=point.id,
-                confidence=round(max(0.0, min(best_score, 1.0)), 2),
+                confidence=round(max(0.0, min(score, 1.0)), 2),
                 evidence=" ".join(text.split()[:14]),
                 source="keyword-fallback",
             )
         )
-        # Only advance the cursor on a reasonably confident hit, so one bad
-        # match cannot push everything after it to the end of the video.
-        if best_score > 0.35:
-            cursor = min(best_index + 1, len(windows) - 1)
     return matches
 
 

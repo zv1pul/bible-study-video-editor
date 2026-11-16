@@ -229,6 +229,12 @@ each be switched off for every copy in `control.json` (`"settings":
 
 The page now shows what it found ("Found: Romans 5:12, 21b (64 words)") and warns if a passage has no reference. Unit checks cover every form above, including the group member's exact message.
 
+## A question anywhere in its division (version 1.3.5, November 2026)
+
+| What was asked | What we found | What changed |
+|---|---|---|
+| Can a question open a division, or sit between two principles, rather than close it? | With the AI (the usual path) it already worked. The offline backup (used when no AI can be reached) walked forward in outline order — principles, then questions — so a question asked earlier was looked for only after the last principle: its card went to the wrong place and its countdown found the wrong silence | Inside a division, each principle and question is looked for from where the division's material begins, in any order; the division's title is placed no later than its first item; a window is preferred when the point's words open it, and on a near tie the first reading wins. The AI is also told questions can come anywhere in a division. Two test lessons (`question_first`, `question_between`) and unit checks. The same change fixed the backup on the live-audience lesson, which had put nearly every card at the end |
+
 ---
 
 ## The rules these add up to

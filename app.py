@@ -1678,7 +1678,10 @@ with right:
                      "One per line — or, for a question written over several "
                      "lines, leave a blank line between questions. Start a "
                      "question with its own name, like \"Final Reflection "
-                     "Question\", and the card is headed with that name.",
+                     "Question\", and the card is headed with that name. "
+                     "A question can be asked anywhere in the division — at the "
+                     "start, between principles or at the end — each gets its "
+                     "countdown right after it.",
             )
         divisions.append({
             "title": title,

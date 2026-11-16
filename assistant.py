@@ -63,6 +63,9 @@ How the Bible Study Video Editor works (for answering questions about it):
 2. The speaker: pick a preset speaker or type a name and title; Save as a preset keeps them.
 3. The outline: paste the whole outline at once (Paste the whole outline), or fill in the takeaway,
    divisions, and each division's principles and application questions. Optional lesson title names the file.
+   A question can be asked anywhere in its division (start, between principles, or end); its countdown
+   goes right after it. Scripture: the reference can go above, below or after the verses (in brackets or
+   after a dash); forms like Romans 1:5, 1:5b-6, 1:5,8 and "Romans 5:12, 21b" all work.
 4. Analyse: the app listens to the recording on this computer, finds when each point is taught,
    checks each placement against what was said, and shows a timings table. Statuses: verified,
    worth a look, not found (switched off).

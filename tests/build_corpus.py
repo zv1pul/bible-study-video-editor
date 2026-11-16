@@ -138,6 +138,29 @@ lesson("long_wait", [
     "divisions": [{"title": "I. The Manna", "principles": "God gives enough for today.", "applications": "Where are you gathering more than today's bread?"},
                   {"title": "II. The Water from the Rock", "principles": "", "applications": ""}]})
 
+# A question can come anywhere in its division: here division two OPENS
+# with its question, and its principle comes after the discussion.
+lesson("question_first", [
+    say("Our takeaway is that grace precedes obedience. Our first division is the rescue at the sea. The principle here is that God fights for His people. God fights for His people. Here is our application question. Where do you need to stand still and let God fight?", "qf1", "Daniel", 175),
+    silence(18, "qf_g1"),
+    say("Welcome back. Our second division is the law at Sinai. Before I teach anything, I want you to sit with a question. What rule have you kept without remembering the rescue behind it? Take a minute.", "qf2", "Daniel", 175),
+    silence(18, "qf_g2"),
+    say("Okay. Here is what Sinai shows us. Israel was rescued first and given the law second. So the principle is that holiness flows from rescue. Holiness flows from rescue. The commandments open by saying I am the Lord who brought you out of Egypt. Let us close in prayer.", "qf3", "Daniel", 175),
+], {"takeaway": "Grace precedes obedience.",
+    "divisions": [{"title": "I. The Rescue", "principles": "God fights for His people.", "applications": "Where do you need to stand still and let God fight?"},
+                  {"title": "II. The Law", "principles": "Holiness flows from rescue.", "applications": "What rule have you kept without remembering the rescue behind it?"}]})
+
+# ...and here a question sits BETWEEN two principles of the same division.
+lesson("question_between", [
+    say("Our takeaway is that worship is a response, not a performance. Our division is the psalms of ascent. Our first principle. Worship begins with remembering what God has done. Worship begins with remembering. Let us stop right there for a question. What has God done this month that you have not yet thanked Him for?", "qb1", "Alex", 165),
+    silence(18, "qb_g1"),
+    say("Good. Now our second principle. Worship ends in trust, not in answers. Worship ends in trust. The pilgrims sang these songs on the road, before they ever saw the temple. And one last question for you. Where are you waiting for answers before you will trust?", "qb2", "Alex", 165),
+    silence(18, "qb_g2"),
+    say("Let us close in prayer.", "qb3", "Alex", 165),
+], {"takeaway": "Worship is a response, not a performance.",
+    "divisions": [{"title": "I. The Psalms of Ascent", "principles": "Worship begins with remembering what God has done.\nWorship ends in trust, not in answers.",
+                   "applications": "What has God done this month that you have not yet thanked Him for?\nWhere are you waiting for answers before you will trust?"}]})
+
 with open(os.path.join(OUT, "outlines.json"), "w") as handle:
     json.dump(outlines, handle, indent=1)
 for name in os.listdir(OUT):

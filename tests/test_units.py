@@ -730,6 +730,78 @@ finally:
     control._STATE_DIR = _saved_state
 
 # --------------------------------------------------------------------------
+# A question can come anywhere in its division (the offline matcher too)
+# --------------------------------------------------------------------------
+
+def _said(*lines):
+    out, t = [], 0.0
+    for gap, text in lines:
+        t += gap
+        out.append(Segment(t, t + 3.0, text, []))
+        t += 3.0
+    return out
+
+
+_q_outline = {"takeaway": "Grace precedes obedience.",
+              "divisions": [
+                  {"title": "I. The Rescue", "principles": "God fights for His people.",
+                   "applications": "Where do you need to stand still and let God fight?"},
+                  {"title": "II. The Law", "principles": "Holiness flows from rescue.",
+                   "applications": "What rule have you kept without remembering the rescue behind it?"}]}
+_q_segments = _said(
+    (0, "Our takeaway is that grace precedes obedience."),
+    (0.5, "Our first division is the rescue at the sea."),
+    (0.5, "The principle here is that God fights for His people."),
+    (0.5, "Where do you need to stand still and let God fight?"),
+    (18, "Welcome back. Our second division is the law at Sinai."),
+    (0.5, "Before I teach, a question for you."),
+    (0.5, "What rule have you kept without remembering the rescue behind it?"),
+    (18, "Okay. Here is what Sinai shows us about Israel."),
+    (0.5, "So the principle is that holiness flows from rescue."),
+    (0.5, "Let us close in prayer."),
+)
+_q_found = {m.id: m.start_time for m in
+            matcher.keyword_match(matcher.build_lesson_points(_q_outline), _q_segments)}
+_q_at = {s.text: s.start for s in _q_segments}
+check("question opening a division: found where it is asked (offline)",
+      _q_found["application_2"],
+      _q_at["What rule have you kept without remembering the rescue behind it?"])
+check("question opening a division: the principle after it is still found",
+      _q_found["principle_2"], _q_at["So the principle is that holiness flows from rescue."])
+check("question opening a division: the division title isn't placed after its question",
+      _q_found["division_2"], _q_at["Welcome back. Our second division is the law at Sinai."])
+check("a division title said again later stays at its first mention before its material",
+      _q_found["division_1"], _q_at["Our first division is the rescue at the sea."])
+
+_b_outline = {"takeaway": "",
+              "divisions": [{"title": "I. The Psalms of Ascent",
+                             "principles": "Worship begins with remembering what God has done.\n"
+                                           "Worship ends in trust, not in answers.",
+                             "applications": "What has God done this month that you have not yet thanked Him for?\n"
+                                             "Where are you waiting for answers before you will trust?"}]}
+_b_segments = _said(
+    (0, "Our division is the psalms of ascent."),
+    (0.5, "Our first principle. Worship begins with remembering what God has done."),
+    (0.5, "What has God done this month that you have not yet thanked Him for?"),
+    (18, "Good. Now our second principle. Worship ends in trust, not in answers."),
+    (0.5, "The pilgrims sang these songs on the road."),
+    (0.5, "Where are you waiting for answers before you will trust?"),
+    (18, "Let us close in prayer."),
+)
+_b_found = {m.id: m.start_time for m in
+            matcher.keyword_match(matcher.build_lesson_points(_b_outline), _b_segments)}
+_b_at = {s.text: s.start for s in _b_segments}
+check("question between two principles: found where it is asked (offline)",
+      _b_found["application_1"],
+      _b_at["What has God done this month that you have not yet thanked Him for?"])
+check("question between two principles: the second principle comes after it",
+      _b_found["principle_2"],
+      _b_at["Good. Now our second principle. Worship ends in trust, not in answers."])
+check_that("the AI is told questions can come anywhere in a division",
+           "a question may open the division" in matcher.build_prompt(
+               matcher.build_lesson_points(_q_outline), "", 120.0))
+
+# --------------------------------------------------------------------------
 
 print(f"{len(PASSED)} passed")
 for failure in FAILED:
